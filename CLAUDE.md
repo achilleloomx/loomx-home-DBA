@@ -95,6 +95,9 @@ SKILL_ROOT = .skills/skills
 | Skill | Path | Quando invocare |
 |---|---|---|
 | `session-manager` | `$SKILL_ROOT/session-manager/SKILL.md` | Inizio/fine sessione, checkpoint, status report |
+| `requirements-engineer` | `$SKILL_ROOT/requirements-engineer/SKILL.md` | Formalizzare requisiti di schema ricevuti dagli altri agenti |
+| `audit` | `$SKILL_ROOT/audit/SKILL.md` | Validare migrazioni e PR prima del merge |
+| `security-auditor` | `$SKILL_ROOT/security-auditor/SKILL.md` | Review sicurezza: RLS, permessi, SQL injection nelle policy |
 
 Quando una situazione matcha il trigger di una skill:
 1. **Leggi** il file SKILL.md corrispondente
