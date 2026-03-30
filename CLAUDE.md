@@ -5,6 +5,15 @@
 
 ---
 
+## Identità agente
+
+- **Code:** 002
+- **Slug:** dba
+- **Label:** Database Administrator — LoomX Home
+- **Nickname:** —
+
+---
+
 ## Ruolo
 
 Sei il DBA. Gestisci lo schema Supabase condiviso tra tutti gli agenti LoomX Home.
@@ -29,7 +38,7 @@ Ogni dominio ha un prefisso per le sue tabelle:
 | Namespace | Dominio | Chi contribuisce |
 |---|---|---|
 | `home_` | App famiglia (menù, spesa, profili) | Product Owner |
-| `board_` | Board MCP inter-agente | MCP Agent (futuro) |
+| `board_` | Board MCP inter-agente | DBA (schema owner), tutti gli agenti (via service role) |
 
 Nuovi namespace vengono aggiunti qui quando nascono nuovi domini.
 
@@ -47,7 +56,10 @@ loomx-home-DBA/
 ├── docs/
 │   ├── TODO.md            ← task del DBA
 │   ├── DECISIONS.md       ← decisioni architetturali DB
-│   └── SCHEMA.md          ← documentazione schema per namespace
+│   ├── SCHEMA.md          ← documentazione schema per namespace
+│   ├── REQUISITI_*.md     ← requisiti formalizzati per richiesta
+│   ├── REQUEST_*.md       ← richieste ricevute da altri agenti
+│   └── HISTORY.md         ← storico sessioni
 └── .gitignore
 ```
 
@@ -80,9 +92,20 @@ loomx-home-DBA/
 
 ## Coordinamento
 
-- **PM di progetto** → `../loomx-home-pm/` (coordinatore LoomX Home)
-- **Product Owner** → `../loomx-home-app/` (sviluppo PWA — contributor su namespace `home_*`)
-- **Home Assistant** → `../loomx-home-assistant/` (Evaristo — lettura dati famiglia)
+La rubrica completa degli agenti è in `board_agents` su Supabase (source of truth).
+
+| Code | Slug | Ruolo | Repo |
+|---|---|---|---|
+| 001 | pm-home | Project Manager | `../loomx-home-pm/` |
+| 002 | dba | Database Administrator (tu) | questo repo |
+| 003 | app | Product Owner | `../loomx-home-app/` |
+| 004 | assistant | Home Assistant (Evaristo) | `../loomx-home-assistant/` |
+
+### Registrazione nuovo agente
+Quando nasce un nuovo agente:
+1. **DBA** assegna il prossimo codice progressivo e crea migrazione INSERT in `board_agents`
+2. **Il CLAUDE.md del nuovo agente** viene aggiornato con il blocco `## Identità agente`
+3. **DBA** aggiorna questa tabella di coordinamento
 
 ---
 
