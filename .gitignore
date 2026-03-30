@@ -9,3 +9,6 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+
+# MCP config (contains secrets)
+.mcp.json

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "board": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["../loomx-board-mcp/dist/index.js", "--agent", "dba"],
+      "env": {
+        "SUPABASE_URL": "https://xxxxx.supabase.co",
+        "SUPABASE_SERVICE_ROLE_KEY": "eyJ..."
+      }
+    }
+  }
+}
