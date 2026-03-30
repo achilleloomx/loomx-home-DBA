@@ -59,6 +59,7 @@ loomx-home-DBA/
 │   ├── SCHEMA.md          ← documentazione schema per namespace
 │   ├── REQUISITI_*.md     ← requisiti formalizzati per richiesta
 │   ├── REQUEST_*.md       ← richieste ricevute da altri agenti
+│   ├── AGENT_REGISTRATION.md ← procedura registrazione nuovo agente
 │   └── HISTORY.md         ← storico sessioni
 └── .gitignore
 ```

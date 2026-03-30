@@ -4,15 +4,18 @@
 
 ---
 
+## Bloccati — serve decisione
+
+- [ ] **Migrare schema `home_*` da loomx-home-app** — le tabelle esistenti (families, profiles, shopping_lists, ecc.) non hanno prefisso `home_`. Serve decidere: rinominare con prefisso (breaking change) o accettare namespace logico senza prefisso fisico?
+- [ ] Definire RLS policies base per namespace `home_*` (bloccato da migrazione)
+
 ## In corso
 
-- [ ] Setup iniziale progetto Supabase (config, primo schema)
-- [ ] Migrare schema esistente da loomx-home-app (namespace `home_*`)
+(nessuno)
 
 ## Backlog
 
-- [ ] Definire RLS policies base per namespace `home_*`
-- [ ] Procedura registrazione nuovo agente (documentare in docs/)
+(nessuno)
 
 ## Done
 
@@ -20,6 +23,8 @@
 - [x] Definire RLS policies per namespace `board_*` (deny-all + service role)
 - [x] Documentare schema `board_*` in SCHEMA.md
 - [x] Formalizzare requisiti in REQUISITI_board_messages.md
+- [x] Setup iniziale progetto Supabase (`fvoxccwfysazwpchudwp`, EU West Paris)
+- [x] Procedura registrazione nuovo agente (docs/AGENT_REGISTRATION.md)
 
 ---
 
