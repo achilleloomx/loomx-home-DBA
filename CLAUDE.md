@@ -101,6 +101,7 @@ La rubrica completa degli agenti è in `board_agents` su Supabase (source of tru
 | 002 | dba | Database Administrator (tu) | questo repo |
 | 003 | app | Product Owner | `../loomx-home-app/` |
 | 004 | assistant | Home Assistant (Evaristo) | `../loomx-home-assistant/` |
+| 005 | board-mcp | Board MCP Server | `../loomx-board-mcp/` |
 
 ### Registrazione nuovo agente
 Quando nasce un nuovo agente:
