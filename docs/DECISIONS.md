@@ -28,15 +28,11 @@ Le tabelle `board_*` hanno RLS abilitato senza policy esplicite (deny-all). Il B
 
 Tutti i namespace (`board_*`, `home_*`, futuri) condividono un unico progetto Supabase: `fvoxccwfysazwpchudwp` (EU West Paris). Il DBA è owner dello schema, gli altri agenti contribuiscono via PR/request.
 
-### D-005 — ⏳ PENDENTE: Prefisso `home_` sulle tabelle app
+### D-005 — Prefisso fisico `home_` su tutte le tabelle app
 **Tags:** schema, naming, home
 **Data:** 2026-03-30
 
-Le tabelle dell'app famiglia (families, profiles, shopping_lists, ecc.) esistono in loomx-home-app **senza prefisso `home_`**. Opzioni:
-- (a) Rinominare con prefisso `home_` → coerente con governance, ma breaking change per l'app
-- (b) Accettare namespace logico senza prefisso fisico → pragmatico, meno rischi
-
-**In attesa di decisione da Achille.**
+Tutte le tabelle dell'app famiglia hanno prefisso fisico `home_` (es. `home_families`, `home_profiles`, `home_shopping_lists`). Le funzioni helper seguono la stessa convenzione (`home_get_my_family_id()`, `home_seed_default_categories()`). L'app (loomx-home-app) deve aggiornare le sue query per usare i nomi prefissati. Migrazione: `20260330110000_home_schema.sql`.
 
 ---
 

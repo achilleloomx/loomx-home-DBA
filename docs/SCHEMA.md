@@ -8,13 +8,10 @@
 
 ### `home_` — App famiglia
 
-> **Nota:** Le tabelle esistenti in loomx-home-app NON hanno prefisso `home_`.
-> Decisione pendente: rinominare con prefisso o accettare namespace logico.
-> Source: `loomx-home-app/supabase/migrations/001-003`
+**Migrazione:** `20260330110000_home_schema.sql` — D-005
+**Stato:** Live su Supabase.
 
-**Stato:** Non ancora migrato nel progetto DBA. Schema documentato sotto come riferimento.
-
-#### `families`
+#### `home_families`
 Nuclei familiari.
 
 | Colonna | Tipo | Note |
@@ -23,7 +20,7 @@ Nuclei familiari.
 | `name` | TEXT NOT NULL | |
 | `created_at` | TIMESTAMPTZ | |
 
-#### `profiles`
+#### `home_profiles`
 Link utente ↔ famiglia (auth).
 
 | Colonna | Tipo | Note |
@@ -35,7 +32,7 @@ Link utente ↔ famiglia (auth).
 | `role` | TEXT | `admin`, `member` |
 | `created_at` | TIMESTAMPTZ | |
 
-#### `family_members`
+#### `home_family_members`
 Componenti del nucleo familiare (non utenti auth, persone reali).
 
 | Colonna | Tipo | Note |
@@ -51,7 +48,7 @@ Componenti del nucleo familiare (non utenti auth, persone reali).
 | `is_active` | BOOLEAN | Default true |
 | `created_at`, `updated_at` | TIMESTAMPTZ | |
 
-#### `pets`
+#### `home_pets`
 Animali domestici.
 
 | Colonna | Tipo | Note |
@@ -64,7 +61,7 @@ Animali domestici.
 | `diet_notes` | TEXT | |
 | `created_at` | TIMESTAMPTZ | |
 
-#### `shopping_categories`
+#### `home_shopping_categories`
 Categorie della spesa (per famiglia, con default via seed function).
 
 | Colonna | Tipo | Note |
@@ -76,7 +73,7 @@ Categorie della spesa (per famiglia, con default via seed function).
 | `is_default` | BOOLEAN | |
 | `created_at` | TIMESTAMPTZ | |
 
-#### `shopping_lists`
+#### `home_shopping_lists`
 Liste della spesa settimanali.
 
 | Colonna | Tipo | Note |
@@ -88,7 +85,7 @@ Liste della spesa settimanali.
 | `is_active` | BOOLEAN | |
 | `created_at` | TIMESTAMPTZ | |
 
-#### `shopping_items`
+#### `home_shopping_items`
 Singoli articoli nella lista della spesa.
 
 | Colonna | Tipo | Note |
@@ -106,7 +103,7 @@ Singoli articoli nella lista della spesa.
 | `added_by` | UUID FK → auth.users | NOT NULL |
 | `created_at`, `updated_at` | TIMESTAMPTZ | |
 
-#### `purchase_history`
+#### `home_purchase_history`
 Storico acquisti.
 
 | Colonna | Tipo | Note |
@@ -121,7 +118,7 @@ Storico acquisti.
 | `purchased_by` | UUID FK → auth.users | |
 | `created_at` | TIMESTAMPTZ | |
 
-#### `weekly_menus`
+#### `home_weekly_menus`
 Menù settimanali.
 
 | Colonna | Tipo | Note |
@@ -132,7 +129,7 @@ Menù settimanali.
 | `status` | TEXT | `draft`, `approved` |
 | `created_at`, `updated_at` | TIMESTAMPTZ | |
 
-#### `menu_items`
+#### `home_menu_items`
 Piatti nel menù.
 
 | Colonna | Tipo | Note |
@@ -148,11 +145,11 @@ Piatti nel menù.
 | `notes` | TEXT | |
 | `created_at` | TIMESTAMPTZ | |
 
-**RLS:** Tutte le tabelle hanno RLS abilitato. Policy basate su `get_my_family_id()` (helper function). `authenticated` ha accesso filtrato per famiglia, `anon` ha zero accesso.
+**RLS:** Tutte le tabelle hanno RLS abilitato. Policy basate su `home_get_my_family_id()` (helper function). `authenticated` ha accesso filtrato per famiglia, `anon` ha zero accesso.
 
-**Function:** `seed_default_categories(family_id)` — seed 11 categorie spesa default per nuove famiglie.
+**Function:** `home_seed_default_categories(family_id)` — seed 11 categorie spesa default per nuove famiglie.
 
-**GRANT:** `authenticated` ha SELECT/INSERT/UPDATE/DELETE su tutte le tabelle (tranne `purchase_history`: solo SELECT/INSERT).
+**GRANT:** `authenticated` ha SELECT/INSERT/UPDATE/DELETE su tutte le tabelle (tranne `home_purchase_history`: solo SELECT/INSERT).
 
 ### `board_` — Board MCP inter-agente
 
