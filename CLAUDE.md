@@ -98,6 +98,7 @@ SKILL_ROOT = .skills/skills
 | `requirements-engineer` | `$SKILL_ROOT/requirements-engineer/SKILL.md` | Formalizzare requisiti di schema ricevuti dagli altri agenti |
 | `audit` | `$SKILL_ROOT/audit/SKILL.md` | Validare migrazioni e PR prima del merge |
 | `security-auditor` | `$SKILL_ROOT/security-auditor/SKILL.md` | Review sicurezza: RLS, permessi, SQL injection nelle policy |
+| `sprint-manager` | `$SKILL_ROOT/sprint-manager/SKILL.md` | Pianificazione sprint, tracking, gate verification |
 
 Quando una situazione matcha il trigger di una skill:
 1. **Leggi** il file SKILL.md corrispondente
