@@ -40,4 +40,38 @@
 
 ### Backlog per prossima sessione
 
-- Attendere risposta da 003/app sul task di aggiornamento query
+- ~~Attendere risposta da 003/app sul task di aggiornamento query~~ → completato in S002
+
+---
+
+## S002 — 2026-03-30/31 — Board evoluto, school menus, gestione posta
+
+**Durata:** sessione singola (a cavallo di due giorni)
+**Partecipanti:** Achille + DBA (002)
+
+### Cosa è stato fatto
+
+1. **Registrazione agente 005/board-mcp (Postman)** — migrazione `20260330120000`
+2. **View `board_overview`** — migrazione `20260330130000`, per monitoraggio PM globale
+3. **Function `board_broadcast`** — migrazione `20260330140000`, invio a tutti gli agenti attivi
+4. **Tabella `home_school_menus`** — migrazione `20260331100000` (richiesta 003/app)
+   - Menù scolastico per bambino, source manual/scraper, UNIQUE per giorno
+5. **Evoluzione `board_messages`** — migrazione `20260331110000` (richiesta 005/Postman)
+   - `tags TEXT[]` con indice GIN
+   - `summary TEXT` per lettura token-efficient
+   - `archived_at TIMESTAMPTZ` con function `board_archive_old()`
+   - View `board_overview` aggiornata
+6. **Gestione posta board** — processati messaggi da PM, App, Postman
+   - Relay messaggio PM → Postman (tool implementation + roadmap D-008)
+   - Aggiornato nickname 005 a "Postman"
+   - Notificato governance onboarding al PM
+
+### Decisioni prese
+
+| ID | Decisione |
+|---|---|
+| D-006 | board_messages: tags, summary, archived_at |
+
+### Backlog per prossima sessione
+
+- Inbox vuota, nessun task pendente
