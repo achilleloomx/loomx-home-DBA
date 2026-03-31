@@ -10,7 +10,7 @@
 
 ## Backlog
 
-- [ ] Comunicare al Product Owner (003/app) che le tabelle ora hanno prefisso `home_` — le query nell'app vanno aggiornate
+(nessuno)
 
 ## Done
 
@@ -22,7 +22,13 @@
 - [x] Procedura registrazione nuovo agente (docs/AGENT_REGISTRATION.md)
 - [x] Migrare schema `home_*` con prefisso fisico (migrazione `20260330110000`, D-005)
 - [x] RLS policies per namespace `home_*` (family-based, `home_get_my_family_id()`)
+- [x] Comunicare prefisso `home_` al Product Owner — confermato aggiornamento query (done)
+- [x] Registrare agente 005/board-mcp (Postman) — migrazione `20260330120000`
+- [x] View `board_overview` per PM — migrazione `20260330130000`
+- [x] Function `board_broadcast` — migrazione `20260330140000`
+- [x] Tabella `home_school_menus` — migrazione `20260331100000` (richiesta 003/app)
+- [x] Evoluzione board_messages: tags, summary, archived_at — migrazione `20260331110000` (richiesta 005/Postman)
 
 ---
 
-*Ultimo aggiornamento: 2026-03-30*
+*Ultimo aggiornamento: 2026-03-31*

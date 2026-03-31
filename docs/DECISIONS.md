@@ -34,6 +34,12 @@ Tutti i namespace (`board_*`, `home_*`, futuri) condividono un unico progetto Su
 
 Tutte le tabelle dell'app famiglia hanno prefisso fisico `home_` (es. `home_families`, `home_profiles`, `home_shopping_lists`). Le funzioni helper seguono la stessa convenzione (`home_get_my_family_id()`, `home_seed_default_categories()`). L'app (loomx-home-app) deve aggiornare le sue query per usare i nomi prefissati. Migrazione: `20260330110000_home_schema.sql`.
 
+### D-006 — board_messages: tags, summary, archived_at
+**Tags:** schema, board
+**Data:** 2026-03-31
+
+Evoluzione dello schema board_messages su richiesta di 005/Postman (product owner piattaforma comunicazione, D-008 PM). Colonne additive: `tags TEXT[]` per filtering per topic, `summary TEXT` per lettura token-efficient, `archived_at TIMESTAMPTZ` per soft-archive. Function `board_archive_old(days)` archivia messaggi done/cancelled. View `board_overview` aggiornata per escludere archiviati e includere nuovi campi.
+
 ---
 
-*Watermark: D-005*
+*Watermark: D-006*

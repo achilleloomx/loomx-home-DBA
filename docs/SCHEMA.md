@@ -145,6 +145,23 @@ Piatti nel menù.
 | `notes` | TEXT | |
 | `created_at` | TIMESTAMPTZ | |
 
+#### `home_school_menus`
+Menù scolastici per bambini (import manuale o scraper).
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `id` | UUID PK | |
+| `family_id` | UUID FK → home_families | CASCADE |
+| `member_id` | UUID FK → home_family_members | CASCADE |
+| `week_start` | DATE NOT NULL | |
+| `day_of_week` | INTEGER | 0-4 (lun-ven) |
+| `dish_name` | TEXT NOT NULL | |
+| `dish_details` | TEXT | |
+| `source` | TEXT | `manual`, `scraper`. Default `manual` |
+| `created_at` | TIMESTAMPTZ | |
+
+**UNIQUE:** `(family_id, member_id, week_start, day_of_week)`
+
 **RLS:** Tutte le tabelle hanno RLS abilitato. Policy basate su `home_get_my_family_id()` (helper function). `authenticated` ha accesso filtrato per famiglia, `anon` ha zero accesso.
 
 **Function:** `home_seed_default_categories(family_id)` — seed 11 categorie spesa default per nuove famiglie.
@@ -178,6 +195,7 @@ Registry centralizzato degli agenti. Ogni agente ha un codice numerico progressi
 | 002 | dba | Database Administrator — LoomX Home | *(=label)* |
 | 003 | app | Product Owner — LoomX Home | *(=label)* |
 | 004 | assistant | Home Assistant — LoomX Home | Evaristo |
+| 005 | board-mcp | Board MCP Server — LoomX Home | Postman |
 
 #### `board_messages`
 Messaggi inter-agente per il Board MCP.
@@ -192,13 +210,19 @@ Messaggi inter-agente per il Board MCP.
 | `body` | TEXT NOT NULL | Contenuto |
 | `ref_id` | UUID FK → board_messages | Self-ref per catene, nullable |
 | `status` | TEXT DEFAULT 'pending' | `pending`, `acknowledged`, `in_progress`, `done`, `cancelled` |
+| `tags` | TEXT[] DEFAULT '{}' | Tag per topic filtering |
+| `summary` | TEXT | Riassunto breve per risparmio token |
+| `archived_at` | TIMESTAMPTZ | NULL = attivo, valorizzato = archiviato |
 | `created_at` | TIMESTAMPTZ DEFAULT now() | Creazione |
 | `updated_at` | TIMESTAMPTZ DEFAULT now() | Ultimo aggiornamento |
 
-**Indici:** `(to_agent, status)`, `(from_agent)`, `(ref_id)`
+**Indici:** `(to_agent, status)`, `(from_agent)`, `(ref_id)`, `GIN(tags)`, `(archived_at) WHERE NULL`
 **Trigger:** `trg_board_messages_updated_at` — aggiorna `updated_at` su ogni UPDATE.
+**Function:** `board_broadcast(from, type, subject, body, ref_id)` — invia a tutti gli agenti attivi.
+**Function:** `board_archive_old(days DEFAULT 7)` — archivia messaggi done/cancelled più vecchi di N giorni.
+**View:** `board_overview` — JOIN con board_agents, esclude archiviati. Include summary, tags.
 **RLS:** Abilitato, deny-all. Accesso solo via service role.
 
 ---
 
-*Ultimo aggiornamento: 2026-03-30*
+*Ultimo aggiornamento: 2026-03-31*
