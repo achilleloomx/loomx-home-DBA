@@ -1,6 +1,8 @@
 # TODO — LoomX Home DBA
 
-> Task del Database Administrator.
+> DEPRECATO — i task sono in loomx_items su Supabase. Usare tool gtd_inbox/gtd_add via Board MCP.
+
+> ~~Task del Database Administrator.~~
 
 ---
 

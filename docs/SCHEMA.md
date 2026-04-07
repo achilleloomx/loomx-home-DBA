@@ -191,11 +191,15 @@ Registry centralizzato degli agenti. Ogni agente ha un codice numerico progressi
 
 | Code | Slug | Label | Nickname |
 |---|---|---|---|
-| 001 | pm-home | Project Manager — LoomX Home | *(=label)* |
+| 001 | loomy | Loomy — LoomX Root Coordinator | Loomy |
 | 002 | dba | Database Administrator — LoomX Home | *(=label)* |
 | 003 | app | Product Owner — LoomX Home | *(=label)* |
 | 004 | assistant | Home Assistant — LoomX Home | Evaristo |
 | 005 | board-mcp | Board MCP Server — LoomX Home | Postman |
+| 010 | sito-loomx | Product Owner — Sito LoomX | Sito LoomX |
+| 011 | loomx-commercialisti | Product Owner — LoomX Commercialisti | Commercialisti |
+| 012 | damato | Product Owner — D'Amato Arredamenti | D'Amato |
+| 013 | sintesi-impianti | Consulting — Sintesi Impianti | Sintesi |
 
 #### `board_messages`
 Messaggi inter-agente per il Board MCP.
@@ -223,6 +227,118 @@ Messaggi inter-agente per il Board MCP.
 **View:** `board_overview` — JOIN con board_agents, esclude archiviati. Include summary, tags.
 **RLS:** Abilitato, deny-all. Accesso solo via service role.
 
+### `loomx_` — Root agent Loomy (anagrafica, GTD, documenti)
+
+**Migrazione:** `20260405100000_loomx_namespace_and_agent_updates.sql` — D-007, D-008
+**Stato:** Da applicare su Supabase.
+
+#### `loomx_clients`
+Anagrafica clienti LoomX.
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `id` | UUID PK | |
+| `name` | TEXT NOT NULL | |
+| `short_name` | TEXT UNIQUE | |
+| `sector` | TEXT | |
+| `size` | TEXT | e.g. '1-10M', '10-50M' |
+| `contact_email` | TEXT | |
+| `contact_name` | TEXT | |
+| `notes` | TEXT | |
+| `status` | TEXT | `active`, `inactive`, `prospect`. Default `active` |
+| `created_at`, `updated_at` | TIMESTAMPTZ | |
+
+#### `loomx_projects`
+Progetti LoomX con link a cliente e agente responsabile.
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `id` | UUID PK | |
+| `name` | TEXT NOT NULL | |
+| `short_name` | TEXT UNIQUE | |
+| `client_id` | UUID FK → loomx_clients | |
+| `type` | TEXT | `consulting`, `tech`, `personal`, `presales`, `internal` |
+| `agent_id` | TEXT | slug dell'agente responsabile |
+| `repo` | TEXT | GitHub repo name |
+| `local_path` | TEXT | Path locale filesystem |
+| `status` | TEXT | `active`, `paused`, `done`, `archived`. Default `active` |
+| `notes` | TEXT | |
+| `created_at`, `updated_at` | TIMESTAMPTZ | |
+
+#### `loomx_tags`
+Tag per categorizzazione items.
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `id` | UUID PK | |
+| `name` | TEXT UNIQUE NOT NULL | |
+| `color` | TEXT | |
+
+#### `loomx_items`
+GTD items — task management centralizzato (D-004 hub).
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `id` | UUID PK | |
+| `title` | TEXT NOT NULL | |
+| `body` | TEXT | |
+| `gtd_status` | TEXT | `inbox`, `next_action`, `waiting_for`, `project_task`, `calendar`, `someday`, `done`, `trash`. Default `inbox` |
+| `owner` | TEXT | agent_id o 'achille' |
+| `waiting_on` | TEXT | Chi si sta aspettando |
+| `priority` | TEXT | `low`, `normal`, `high`, `urgent`. Default `normal` |
+| `deadline` | TIMESTAMPTZ | |
+| `completed_at` | TIMESTAMPTZ | |
+| `source` | TEXT | Provenienza: meeting, email, board, manual |
+| `source_ref` | TEXT | Riferimento sorgente |
+| `created_at`, `updated_at` | TIMESTAMPTZ | |
+
+#### `loomx_item_projects`
+Mapping N:N tra items e progetti.
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `item_id` | UUID FK → loomx_items | CASCADE |
+| `project_id` | UUID FK → loomx_projects | CASCADE |
+
+**PK composita:** `(item_id, project_id)`
+
+#### `loomx_item_tags`
+Mapping N:N tra items e tags.
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `item_id` | UUID FK → loomx_items | CASCADE |
+| `tag_id` | UUID FK → loomx_tags | CASCADE |
+
+**PK composita:** `(item_id, tag_id)`
+
+#### `loomx_documents`
+Indice documenti per progetto/agente.
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `id` | UUID PK | |
+| `path` | TEXT UNIQUE NOT NULL | |
+| `filename` | TEXT NOT NULL | |
+| `doc_type` | TEXT | md, pdf, xlsx, etc. |
+| `title` | TEXT | |
+| `description` | TEXT | |
+| `project_id` | UUID FK → loomx_projects | |
+| `agent_id` | TEXT | slug dell'agente owner |
+| `status` | TEXT | `active`, `archived`, `deleted`. Default `active` |
+| `size_bytes` | BIGINT | |
+| `last_modified` | TIMESTAMPTZ | |
+| `indexed_at` | TIMESTAMPTZ | |
+
+#### Views
+
+- **`loomx_v_inbox`** — Items con `gtd_status = 'inbox'`, con project_ids aggregati. Ordinati per priority DESC, created_at.
+- **`loomx_v_next_actions`** — Items con `gtd_status = 'next_action'`. Ordinati per priority DESC, deadline.
+- **`loomx_v_waiting_for`** — Items con `gtd_status = 'waiting_for'`. Ordinati per deadline.
+- **`loomx_v_project_dashboard`** — Conteggio items per progetto e gtd_status.
+
+**RLS:** Tutte le tabelle hanno RLS abilitato, deny-all (nessuna policy esplicita). Accesso solo via service role (D-008).
+
 ---
 
-*Ultimo aggiornamento: 2026-03-31*
+*Ultimo aggiornamento: 2026-04-05*

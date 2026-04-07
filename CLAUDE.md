@@ -39,6 +39,7 @@ Ogni dominio ha un prefisso per le sue tabelle:
 |---|---|---|
 | `home_` | App famiglia (menù, spesa, profili) | Product Owner |
 | `board_` | Board MCP inter-agente | DBA (schema owner), tutti gli agenti (via service role) |
+| `loomx_` | Anagrafica, GTD, documenti (root agent) | Loomy (via service role) |
 
 Nuovi namespace vengono aggiunti qui quando nascono nuovi domini.
 
@@ -85,6 +86,10 @@ loomx-home-DBA/
 - Controllare coerenza cross-namespace (no duplicazioni, FK corrette)
 - Verificare che la migrazione sia idempotente dove possibile
 
+### Bitwarden (vault EU)
+- Server Bitwarden = `vault.bitwarden.eu` (NON `vault.bitwarden.com`). Achille è utente region EU, account creato lì per coerenza GDPR. I due cluster sono database separati.
+- Tutti gli script/sessioni che usano `bw` DEVONO eseguire `bw config server https://vault.bitwarden.eu` come PRIMO step, prima di `bw login`/`bw unlock`. Vedi D-014.
+
 ### Lingua
 - Risposte: **italiano**
 - Codice, migrazioni, commenti SQL: **inglese**
@@ -97,11 +102,15 @@ La rubrica completa degli agenti è in `board_agents` su Supabase (source of tru
 
 | Code | Slug | Ruolo | Repo |
 |---|---|---|---|
-| 001 | pm-home | Project Manager | `../loomx-home-pm/` |
+| 001 | loomy | Root Coordinator (Loomy) | `../../../00. LoomX Consulting/` |
 | 002 | dba | Database Administrator (tu) | questo repo |
 | 003 | app | Product Owner | `../loomx-home-app/` |
 | 004 | assistant | Home Assistant (Evaristo) | `../loomx-home-assistant/` |
 | 005 | board-mcp | Board MCP Server (Postman) | `../loomx-board-mcp/` |
+| 010 | sito-loomx | Product Owner — Sito LoomX | `LoomXweb` |
+| 011 | loomx-commercialisti | Product Owner — Commercialisti | `LoomXCommercialisti` |
+| 012 | damato | Product Owner — D'Amato | `DamatoArredamenti_Website` |
+| 013 | sintesi-impianti | Consulting — Sintesi | — |
 
 ### Registrazione nuovo agente
 Quando nasce un nuovo agente:
