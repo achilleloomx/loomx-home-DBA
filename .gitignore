@@ -12,3 +12,13 @@ Thumbs.db
 
 # MCP config (contains secrets)
 .mcp.json
+
+# Local env files (Bitwarden API keys, secrets, runtime config)
+.env
+.env.local
+.env.*.local
+env.local.txt
+.scratch/
+
+# Claude Code local agent settings
+.claude/
