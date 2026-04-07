@@ -4,6 +4,72 @@
 
 ---
 
+## S011 cont. ³ — 2026-04-07 (sera) — Container Doc SOSPESO (D-019), Fase 1 prosegue host-direct
+
+**Trigger:** primo test reale di `python hub/agent_manager.py invoke researcher "..."` con il dispatcher docker appena scritto.
+
+### Fatto
+1. **Modifiche a `00. LoomX Consulting/hub/agent_manager.py`** (cross-repo, autorizzato da Achille opzione A): aggiunto campo `runtime`/`docker` a `Agent`, config docker per `researcher`, helper `_fetch_db_password_from_vault` (master via getpass, unlock vault, fetch secure note, lock, scrub), helper `_invoke_docker` (docker run con `DB_PASSWORD` via env name only), dispatcher in `cmd_invoke` e `cmd_invoke_interactive`. `_which()` per risolvere `bw`/`docker` come `.cmd` shim su Windows (Python `subprocess` su Windows non risolve PATH come bash).
+2. **Test live**: container parte, vault unlock OK, DB password fetched, entrypoint exec `claude --print --dangerously-skip-permissions <preambolo+prompt>`. **claude dentro al container risponde `Not logged in · Please run /login`**. Container vergine, OAuth state non presente.
+3. **Analisi opzioni** (vedi D-019 per dettaglio): API key Anthropic scartata (Claude Max OAuth obbligatorio), bind mount `.credentials.json` scartato (concurrent session risk + write race + secret pesante), `/login` interattivo non praticabile.
+4. **Decisione di Achille** dopo discussione threat model: **sospendere l'approccio Docker** per Doc, tenere il valore di sicurezza al livello DB (ruolo `doc_researcher` + RLS) che è già completo.
+5. **Revert `agent_manager.py`** all'originale via Edit (il repo Consulting non è git, niente checkout possibile). Verifica via `ast.parse` + `python list`: 7 funzioni come l'originale, nessun residuo docker, sintassi OK.
+6. **D-019 scritta** in `docs/DECISIONS.md` con racconto opzioni esaminate, scelte, cosa resta valido, cosa fare adesso per chiudere Fase 1 senza container.
+7. **`docs/AGENT_MANAGER_DOCKER_SPEC.md` marcato DEFERRED** in header, resta come riferimento riusabile.
+8. **GTD `db896a84` (agent_manager docker-aware)** sarà chiuso come `cancelled` (lo faccio dopo il commit).
+9. **Summary completo a Loomy** con consegnabili Fase 1 senza container e palla per `hub/researcher/.mcp.json`.
+
+### Cosa resta in piedi (NON regredisce)
+- Schema agents + ruolo `doc_researcher` (live, RLS chirurgica)
+- D-018 `loomx_item_agents` + co-engagement (live, 9/9 PASS)
+- Image `loomx/doc-researcher:poc` come artefatto (rebuildable, futura)
+- Vault item Bitwarden `loomx/agents/doc_researcher` come connection password riusabile
+
+### Cosa serve adesso per chiudere Fase 1
+- **Loomy**: aggiornare `hub/researcher/.mcp.json` (o equivalente Doc) per Postgres user `doc_researcher.fvoxccwfysazwpchudwp` con password dal vault.
+- **Achille**: 1 settimana di uso reale Doc con ruolo dedicato → segnalare falsi positivi o lacune RLS.
+- **DBA**: se la settimana regge, matrice agente×tabella×permessi per Fase 2 e rollout dei ruoli (non dei container) ai 9 agenti rimanenti.
+
+### Lezione strutturale
+Il container per claude code è incompatibile con OAuth desktop senza compromessi pesanti. La separazione a livello DB (D-017 Design C, ruolo per agente, RLS) **da sola fornisce il 90% del valore di sicurezza** che il piano D-019 originale (Loomy) cercava. Il container è ortogonale e si reinserisce quando l'auth machine-friendly esiste o quando si va su VPS con API key separata.
+
+---
+
+## S011 cont. ² — 2026-04-07 (tardo pomeriggio) — D-018 loomx_item_agents applicato, 9/9 PASS
+
+**Trigger:** msg `b45ea879` (Loomy → DBA, 15:40): GO su 2 fronti, (1) implementa `agent_manager.py` docker-aware, (2) design+apply `loomx_item_agents` in autonomia. Achille conferma: prima D-018 (puro SQL, niente cross-repo), poi `agent_manager.py` cross-repo.
+
+### Fatto (parte D-018)
+1. **Verifica schema esistente**: `loomx_agents` non esiste, `board_agents` sì con `slug` UNIQUE — userò questa come target FK (divergenza giustificata dalla proposta Loomy).
+2. **Migration `20260407130000_loomx_item_agents.sql`** — schema PK composto, FK CASCADE, index su agent_slug, RLS deny-all.
+3. **Migration `20260407140000_doc_researcher_co_engagement.sql`** — drop+recreate delle policy `doc_researcher_select_engaged` e `doc_researcher_update_engaged` con OR EXISTS su `loomx_item_agents`. Nuova policy `doc_researcher_select_own_links` su `loomx_item_agents` (filtrata da slug). GRANT SELECT only.
+4. Dry-run combinato delle 2 migration → PASS.
+5. Apply via `supabase db query --linked` → entrambe applicate.
+6. Test funzionale via `.scratch/d018_test.sh`: master Bitwarden digitata da Achille in Git Bash, fetch DB password, psycopg2 come `doc_researcher` + setup admin via `supabase db query` per le righe foreign. **9/9 PASS**:
+   - Setup item own=researcher OK
+   - Setup item owner=dba (spoof) DENY
+   - Foreign item invisibile prima del link
+   - Foreign item visibile dopo INSERT in loomx_item_agents
+   - UPDATE foreign item via co-engagement ALLOW
+   - UPDATE owner='dba' while co-engaged ALLOW (semanticamente OK)
+   - SELECT loomx_item_agents filtrato
+   - INSERT loomx_item_agents DENY
+   - Foreign item invisibile dopo unlink
+7. **D-018 scritta** in `docs/DECISIONS.md` (locale).
+8. **Cleanup test rows** via service_role (transient 500 della Management API al primo tentativo, OK al retry).
+
+### Note D-018
+- Tool MCP per gestire co-engagement (`gtd_link_agent`/`gtd_unlink_agent` o simili) NON esistono ancora — la membership va gestita via service_role o lo aggiunge Postman in iterazione successiva. Loomy avvisato.
+- Pattern generalizzabile per Fase 2: ogni nuovo ruolo per-agente avrà policy RLS modellate su questo, una migration per agente. Lo slug literal va parametrizzato per ogni ruolo (non function generica perché `session_user` è già il discriminante e una lookup table farebbe più male che bene).
+- Bloccante per Fase 2 RLS rollout dei 9 agenti: **rimosso**.
+
+### Da fare ancora in S011 cont. ²
+- Implementare `agent_manager.py` docker-aware in `00. LoomX Consulting/hub/agent_manager.py` (cross-repo, autorizzato da Achille opzione A).
+- Summary unico a Loomy a fine sessione con entrambi i fronti (D-018 + agent_manager).
+- Commit + push.
+
+---
+
 ## S011 cont. — 2026-04-07 (pomeriggio) — Container Doc → Design C, master prompt-on-demand
 
 **Trigger:** GTD `db896a84` da Loomy (creato 09:43): `agent_manager.py` deve diventare docker-aware per slug `researcher`. Il GTD originale prevedeva di iniettare credenziali Bitwarden nel container; rivisto in sessione su input di Achille per ridurre il blast radius.

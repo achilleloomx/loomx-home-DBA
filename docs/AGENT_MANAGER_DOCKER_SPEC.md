@@ -1,5 +1,19 @@
 # Spec — `agent_manager.py` docker-aware per slug `researcher`
 
+> ⚠️ **DEFERRED — vedi D-019** in `docs/DECISIONS.md`.
+>
+> L'approccio Docker per Doc è stato sospeso il 2026-04-07 (S011 cont. ³) per
+> incompatibilità con OAuth Claude Max (claude in container chiede `/login`,
+> non automatizzabile, API key non è opzione perché Achille usa Claude Max).
+> Il documento resta come riferimento implementativo riusabile in futuro
+> (es. quando si avrà OAuth machine-friendly o si andrà su VPS con API key).
+>
+> **Stato attuale Fase 1 RLS**: Doc gira sull'host normalmente, ma usa il ruolo
+> Postgres `doc_researcher` (RLS hardenato) invece di service_role. La separazione
+> a livello DB resta valida — è il vero strato di sicurezza.
+
+---
+
 > GTD `db896a84` (Loomy → DBA, 2026-04-07).
 > Owner implementazione: Loomy (il file vive in `00. LoomX Consulting/hub/agent_manager.py`).
 > Owner spec: DBA (S011 cont., 2026-04-07).

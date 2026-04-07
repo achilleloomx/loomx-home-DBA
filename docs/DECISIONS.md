@@ -170,4 +170,98 @@ Decisione presa in S011 cont. dopo che la POC RLS Phase 1 ha messo davanti la do
 
 ---
 
-*Watermark: D-017*
+### D-018 — `loomx_item_agents`: co-engagement N:N item↔agente
+**Tags:** rls, governance, gtd
+**Data:** 2026-04-07
+
+Implementazione locale del concetto D-018 di Loomy (hub): un item GTD può avere più agenti "ingaggiati" senza forzarli nei due campi singoli `owner` / `waiting_on`. Necessario per generalizzare le policy RLS per-agente in vista del rollout Fase 2 (D-020) ai 9 agenti rimanenti — finché non c'è co-engagement esplicito, gli agenti vedono solo righe di cui sono owner o waiting_on diretti, e qualunque task collaborativo serio rompe.
+
+**Schema** (migration `20260407130000`):
+```sql
+CREATE TABLE loomx_item_agents (
+  item_id    UUID NOT NULL REFERENCES loomx_items(id)    ON DELETE CASCADE,
+  agent_slug TEXT NOT NULL REFERENCES board_agents(slug) ON DELETE CASCADE,
+  role       TEXT NOT NULL DEFAULT 'collaborator',
+  added_by   TEXT NOT NULL,
+  added_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (item_id, agent_slug)
+);
+CREATE INDEX loomx_item_agents_agent_slug_idx ON loomx_item_agents (agent_slug);
+ALTER TABLE loomx_item_agents ENABLE ROW LEVEL SECURITY;
+```
+
+**Divergenza dalla proposta Loomy**: la FK su `agent_slug` punta a `board_agents(slug)` (UNIQUE confermata), NON a `loomx_agents(slug)` — quest'ultima tabella non esiste nello schema corrente. La rubrica unica degli agenti è `board_agents` (D-001), nessun motivo per duplicarla.
+
+**Policy estensione doc_researcher** (migration `20260407140000`): drop+recreate (non ALTER POLICY in-place) di `doc_researcher_select_engaged` e `doc_researcher_update_engaged`. Le nuove USING/WITH CHECK accettano:
+1. `owner = 'researcher'` (caso originale)
+2. `waiting_on = 'researcher'` (caso originale)
+3. `EXISTS (SELECT 1 FROM loomx_item_agents WHERE item_id = loomx_items.id AND agent_slug = 'researcher')` (NUOVO)
+
+`doc_researcher` ottiene anche `SELECT` su `loomx_item_agents` filtrato dal proprio slug (policy `doc_researcher_select_own_links`) — gli serve per sapere "in quali item sono co-engaged". NON ottiene INSERT/UPDATE/DELETE: la gestione dei link è prerogativa di Loomy/service_role o dei tool MCP che Postman aggiungerà in iterazione successiva.
+
+**Test funzionali (9/9 PASS)** via `psycopg2` come `doc_researcher`, eseguiti in S011 cont. tramite `.scratch/d018_test.sh`:
+- Setup item con `owner='researcher'` → ALLOW
+- Setup item con `owner='dba'` (spoof) → DENY
+- Item foreign (creato via service_role) → invisibile prima del link
+- Link via service_role → item ora visibile
+- UPDATE foreign item via co-engagement → ALLOW
+- UPDATE owner='dba' mentre co-engaged → ALLOW (semanticamente OK: finché c'è il link, l'agente può modificare; se la membership viene rimossa, perde l'accesso alla riga modificata)
+- SELECT su `loomx_item_agents` → vede solo i propri link
+- INSERT su `loomx_item_agents` → DENY (no GRANT)
+- Dopo unlink → torna invisibile
+
+**Open item delegato a Postman/board-mcp**: il Board MCP attualmente NON ha tool per gestire co-engagement (`gtd_link_agent` / `gtd_unlink_agent` o simili). Per ora la membership si gestisce solo via service_role. Loomy ha confermato che aprirà un GTD a Postman per aggiungere i tool quando servono.
+
+**Generalizzazione Fase 2**: ogni nuovo ruolo per-agente (Fase 2 D-020) avrà policy RLS modellate su questo pattern. Lo slug literal (`'researcher'`) va parametrizzato per ogni agente — non si può usare una function generica `current_agent_slug()` perché `session_user` è già il discriminante e mappare role → slug richiederebbe una lookup table o configurazione. Più semplice: una migration per agente.
+
+---
+
+### D-019 — Approccio Docker per Doc: SOSPESO. Fase 1 RLS prosegue host-direct con ruolo dedicato.
+**Tags:** rls, docker, governance, deferral
+**Data:** 2026-04-07
+
+**Decisione presa in S011 cont. ³** dopo che il primo test reale di `agent_manager.py invoke researcher "..."` ha rivelato un blocker non risolvibile dentro il perimetro DBA: claude all'interno del container risponde `Not logged in · Please run /login`. Il container parte vergine, senza stato OAuth Claude Max.
+
+**Opzioni esaminate per sbloccare il container:**
+
+1. **`ANTHROPIC_API_KEY` via env** — pulito, container resta stateless. **Scartato**: Achille usa Claude Max OAuth, le API key sono un canale di billing separato (non incluso nell'abbonamento Max), non è un'opzione operativa né economica.
+2. **Bind mount `~/.claude/.credentials.json`** — l'unica strada tecnica per riusare l'OAuth dell'host nel container. **Scartato per peso/rischio**:
+   - Concurrent session: lo stesso refresh token usato in 2 processi contemporaneamente (host attivo + container) potrebbe innescare rate limit, invalidazione o richiesta di re-login lato Anthropic. Comportamento non documentato pubblicamente, rischio empirico non quantificabile a priori.
+   - Write race sul refresh token (claude del container può aggiornarlo nello stesso file che claude dell'host sta usando).
+   - File permission cross-platform Windows host → Linux container (uid 1000 `node`).
+   - `.credentials.json` è il segreto più pesante della catena (accesso completo al sub Claude Max), bind mount in container amplia la superficie di attacco.
+3. **`claude /login` interattivo dentro container** — non automatizzabile (browser + verification code), e tmpfs `/runtime` perde lo stato a ogni `--rm`. Non praticabile.
+4. **Sospendere il container e tenere solo la separazione a livello DB** — Achille ha chiesto esplicitamente di non aggiungere altra struttura. **Scelta**.
+
+**Cosa resta valido di S011 cont. (NON regredisce):**
+
+- Schema `agents` + ruolo `doc_researcher` LOGIN NOINHERIT NOBYPASSRLS (migration `20260407100000`, applicata).
+- 4 policies RLS keyed su `session_user` su `loomx_items` e `board_messages` (inclusa estensione D-018).
+- `loomx_item_agents` + co-engagement (migration `20260407130000`+`20260407140000`, applicate).
+- Test funzionali 10/10 + 9/9 PASS, validati in S011 e S011 cont. ².
+- Image `loomx/doc-researcher:poc` rebuildable, Dockerfile + entrypoint Design C committati come artefatti.
+- Spec `docs/AGENT_MANAGER_DOCKER_SPEC.md` come riferimento implementativo riusabile (marcato DEFERRED).
+- Vault item `loomx/agents/doc_researcher` (Bitwarden EU, secure note `b664040d-...`) — usabile come connection password ovunque, non solo dentro container.
+
+**Cosa è stato revertito:**
+
+- `00. LoomX Consulting/hub/agent_manager.py` riportato allo stato pre-S011 cont. ³ (rimosso `runtime`/`docker` su `Agent`, rimossa config docker di `researcher`, rimossi `_fetch_db_password_from_vault` e `_invoke_docker`, rimossi dispatcher in `cmd_invoke` e `cmd_invoke_interactive`). Diff zero rispetto all'originale, verificato via `ast.parse`.
+
+**Cosa serve fare adesso per chiudere Fase 1 RLS senza container:**
+
+1. **[Loomy]** Aggiornare `hub/researcher/.mcp.json` (o equivalente di Doc) per usare la connection string Postgres con user `doc_researcher.fvoxccwfysazwpchudwp` e password presa da Bitwarden vault item `loomx/agents/doc_researcher`. Il pattern di iniezione (env var, file 600 fuori OneDrive, o altro) è scelta di Loomy.
+2. **[Achille]** Lavorare 1 settimana con Doc che parla a Supabase via il ruolo `doc_researcher` (RLS in vigore) e segnalare se incappa in falsi positivi (cose che dovrebbe poter fare e non riesce) o lacune (cose che riesce a fare e non dovrebbe). Questo è il vero test della Fase 1.
+3. **[DBA]** Se la settimana regge senza incidenti, preparare la matrice "agente×tabella×permessi" per i 9 agenti di Fase 2 (D-020) e iniziare il rollout dei ruoli (non dei container).
+
+**Quando potrebbe tornare il container:**
+
+- Quando Anthropic rilascerà OAuth machine-friendly per Claude Code (token long-lived gestibili headless).
+- Quando si va su VPS Hetzner (D-020 Fase 4): in quel contesto API key Anthropic ha senso (always-on, no UI), e la spec resta valida modulando l'env del launcher.
+
+D-017 (Design C, host-side secret extraction) **resta valida** come pattern per la separazione DB e per il vault handling. La sospensione D-019 riguarda solo il livello "container per claude", non il livello "ruolo Postgres dedicato per agente".
+
+GTD `db896a84` (`agent_manager.py` docker-aware) chiuso come `cancelled` con riferimento a questa decisione.
+
+---
+
+*Watermark: D-019*
