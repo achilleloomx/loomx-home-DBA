@@ -135,6 +135,39 @@ Empiricamente verificato in S009 (Gap B test). Tentativi:
 - **B-opt-2 (preferito DBA)**: accettare il residuo, neutralizzare l'enumerazione con nomi-ruolo opachi (`agt_a8f3kx_doc` invece di `doc_researcher`), forensics via pgaudit + log shipping S3.
 - B-opt-3: rimuovere 4.5 dalla lista hardening obbligatori, amendment esplicito a D-019 (Loomy DECISIONS).
 
+### D-017 — Container agente: Design C (host-side secret extraction) + master prompt-on-demand
+**Tags:** rls, security, docker, vault
+**Data:** 2026-04-07
+
+Decisione presa in S011 cont. dopo che la POC RLS Phase 1 ha messo davanti la domanda concreta: come passa la password DB dell'agente al suo container in modo che (a) la master Bitwarden non viva su disco e (b) il blast radius del container resti limitato al singolo segreto operativo del ruolo.
+
+**Design scelto: C — host-side secret extraction.**
+
+1. **Solo l'host parla con Bitwarden.** Il launcher (`hub/agent_manager.py`, lavoro Loomy) sull'host fa unlock vault, fetch della password DB del ruolo (es. `loomx/agents/doc_researcher`), lock vault.
+2. **Il container è cieco al vault.** Riceve un singolo env var `DB_PASSWORD`, scrive `.pgpass` in tmpfs (`/runtime`), esegue `claude` (o `psql` smoke). Niente `bw` CLI nel container, niente API key, niente master.
+3. **Master password mai su disco.** Il launcher prompta interattivamente via `getpass()` ogni volta che serve unlock. La master vive nella RAM del processo Python il tempo necessario per ottenere `BW_SESSION`, poi viene scartata.
+
+**Perché Opt 1 (prompt-on-demand) e non cache della session:**
+- Achille ha rifiutato esplicitamente il salvataggio di `BW_SESSION` su file dopo discussione sul threat model: anche un file 600 in `~/.loomx/.bw-session` resta "qualcosa che decifra il vault" finché esiste, e su un PC dentro OneDrive sincronizzato non è abbastanza protetto.
+- Costo: ogni invocazione di un agente containerizzato richiede prompt master. Per uso normale (Doc invocato sporadicamente) accettabile.
+- Possibile evoluzione futura: cache short-TTL fuori OneDrive, riaperta come decisione separata se l'attrito Opt 1 diventa eccessivo.
+
+**Conseguenze applicate in S011 cont.:**
+- `env.local.txt` ora contiene SOLO `BW_CLIENTID` + `BW_CLIENTSECRET` (API key, da sole non decifrano il vault). `BW_PASSWORD` rimosso. Memoria locale `env_local_relocation_todo` per l'eventuale spostamento del file fuori OneDrive in futuro.
+- `docker/doc-researcher/entrypoint.sh` semplificato: rimosso tutto il blocco `bw config/login/unlock/get item`, ora accetta `DB_PASSWORD` come env required, scrive `.pgpass` in tmpfs ed esegue.
+- `docker/doc-researcher/Dockerfile` snellito: rimosso `bw`, `unzip`, `jq` (non più necessari). Image scesa da ~640 MB a 571 MB.
+- `loomx/doc-researcher:poc` ricostruita e validata con `SMOKE=1` (struttura) e `SMOKE_LIVE=1` (connessione reale al pooler EU come `doc_researcher`, master digitata interattivamente in Git Bash via `read -s` da Achille).
+- Spec per il launcher in `docs/AGENT_MANAGER_DOCKER_SPEC.md` consegnata a Loomy come riferimento per implementare GTD `db896a84`.
+
+**Threat model in chiaro:**
+- Compromesso laptop con file system access → attaccante vede `BW_CLIENTID/SECRET` (inerti senza master) + immagine Docker (no secrets at rest) + eventuali env del processo Python in esecuzione (master solo se beccato proprio al momento del prompt, finestra brevissima). Il vault NON è decifrabile.
+- Compromesso container in esecuzione → attaccante vede solo `DB_PASSWORD` di `doc_researcher`, che è RLS-locked (può fare quello che la policy permette al ruolo, niente di più). Niente accesso ad altri ruoli, niente master, niente API key.
+- Compromesso OneDrive (file in cloud Microsoft) → vede `env.local.txt` con la sola API key, inerte. (Master era stata in OneDrive fino al 2026-04-07 in `env.local.txt`, ora rimossa — debito tecnico chiuso.)
+
+**Azioni correlate:**
+- Achille deve **ruotare la master Bitwarden** (vault.bitwarden.eu → Account Settings → Security) entro fine giornata 2026-04-07: la vecchia è stata letta dal DBA durante l'edit del file in S011 cont. e quindi è transitata nel context window di una sessione AI. Anche se Anthropic non addestra su user data, igiene di sicurezza vuole rotation.
+- Quando D-018 (`loomx_item_agents`) sarà implementato, la policy RLS di `doc_researcher` (e di tutti i ruoli Fase 2) andrà estesa per supportare co-engagement. Non bloccante per Fase 1.
+
 ---
 
-*Watermark: D-016*
+*Watermark: D-017*

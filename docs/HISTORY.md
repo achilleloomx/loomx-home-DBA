@@ -4,6 +4,35 @@
 
 ---
 
+## S011 cont. — 2026-04-07 (pomeriggio) — Container Doc → Design C, master prompt-on-demand
+
+**Trigger:** GTD `db896a84` da Loomy (creato 09:43): `agent_manager.py` deve diventare docker-aware per slug `researcher`. Il GTD originale prevedeva di iniettare credenziali Bitwarden nel container; rivisto in sessione su input di Achille per ridurre il blast radius.
+
+### Fatto
+1. **Discussione threat model + scelta Design C** (vedi D-017): solo l'host parla con Bitwarden, il container è cieco al vault, riceve `DB_PASSWORD` e basta. Master prompt-on-demand (Opt 1, no cache session su disco).
+2. **`env.local.txt` ripulito**: rimossa `BW_PASSWORD`, restano solo `BW_CLIENTID` + `BW_CLIENTSECRET` (API key, inerti senza master). File da 144 → 103 byte. Memoria locale `env_local_relocation_todo` per ricordarsi lo spostamento del file fuori OneDrive in sessione futura.
+3. **`docker/doc-researcher/entrypoint.sh` semplificato** (Design C): rimosso tutto il blocco `bw config/login/unlock/get item`. Ora richiede `DB_PASSWORD` come env, scrive `.pgpass` in tmpfs, esegue. Modi `SMOKE=1` (struttura, no DB) e `SMOKE_LIVE=1` (connessione reale al pooler) entrambi mantenuti.
+4. **`docker/doc-researcher/Dockerfile` snellito**: rimosso `bw`, `unzip`, `jq` (non più necessari). Restano `psql`, `python3`, `claude`, `ca-certificates`. Image scesa da ~640 MB a **571 MB**.
+5. **Rebuild `loomx/doc-researcher:poc`** OK.
+6. **Smoke validation completa**:
+   - `SMOKE=1` (no DB) PASS dall'host: tutte le tool dentro il container OK, `node v20.20.2`, `psql 15.16`, `python 3.11.2`, `claude 2.1.92`, `RUNTIME_DIR=/runtime` (700 node).
+   - `SMOKE_LIVE=1` PASS via script `.scratch/smoke_live.sh` lanciato da Achille in Git Bash. Achille ha digitato la master interattivamente (`read -s`, mai in chat), il script ha fatto unlock vault, fetch DB password, lock, lanciato il container con `DB_PASSWORD` env, ottenuto:
+     ```
+     [entrypoint] SMOKE_LIVE: connecting via Supavisor session-mode
+     session_user=doc_researcher current_user=doc_researcher
+     [entrypoint] smoke_live OK
+     ```
+   - Validato sul campo: master mai in chat, mai su disco, container zero footprint Bitwarden.
+7. **Spec per Loomy**: `docs/AGENT_MANAGER_DOCKER_SPEC.md` — guida implementativa completa per il GTD `db896a84` (`hub/agent_manager.py` lato Loomy nel suo repo). Include pseudo-codice, criteri di accettazione, regole anti credential-leak, lista negativa.
+8. **D-017 scritta** in `docs/DECISIONS.md` (Design C + Opt 1 + threat model in chiaro + azione di rotation master richiesta ad Achille).
+
+### Note
+- **Master Bitwarden esposta nel context window**: per editare `env.local.txt` e rimuovere `BW_PASSWORD` ho dovuto leggere il file. La master è quindi transitata nella mia sessione AI. Anthropic non addestra su user data ma rotation raccomandata entro fine giornata. **Action item per Achille:** vault.bitwarden.eu → Account Settings → Security → Master Password → cambia.
+- D-018 (`loomx_item_agents`, co-engagement) ancora non implementato → policy RLS di `doc_researcher` resta su `owner='researcher' OR waiting_on='researcher'`. Sarà esteso quando D-018 viene implementato (owner Loomy).
+- Bug noto Git Bash: `read -s` dentro script paste-multilinea legge la riga successiva del paste come password. Workaround: salvare lo script in un file e lanciarlo (`.scratch/smoke_live.sh`).
+
+---
+
 ## S011 — 2026-04-07 — RLS Phase 1 POC Doc end-to-end PASS
 
 **Trigger:** chiusura naturale di S010 (Gap C strutturale ok, migration scritta ma non applicata).

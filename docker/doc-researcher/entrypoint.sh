@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
-# entrypoint.sh — doc-researcher container
-# Responsabilità:
-#  1. Configurare Bitwarden CLI sul cluster EU (D-014)
-#  2. Login con API key (BW_CLIENTID/BW_CLIENTSECRET) — non interattivo
-#  3. Unlock con master password (BW_PASSWORD) → BW_SESSION
-#  4. Recupera password DB doc_researcher dal vault → file in tmpfs
-#  5. Genera .mcp.json a runtime in tmpfs (mai committato, mai su disco persistente)
-#  6. Lock vault e exec del CLI Claude
+# entrypoint.sh — doc-researcher container (Design C, D-022)
 #
-# Le secrets vivono solo in $RUNTIME_DIR (tmpfs) e in env del processo.
-# Smoke mode: SMOKE=1 → eseguito senza bw, stampa diagnostica e termina.
+# Il container NON parla con Bitwarden. Il launcher sull'host (agent_manager.py)
+# estrae la password DB dal vault e la inietta come env var $DB_PASSWORD.
+# Conseguenze: niente bw nel container, niente master password mai presente,
+# blast radius limitato al singolo segreto operativo del ruolo doc_researcher.
+#
+# Responsabilità entrypoint:
+#  1. Validare $DB_PASSWORD ricevuto dall'host
+#  2. Scrivere PGPASSFILE in tmpfs ($RUNTIME_DIR)
+#  3. Generare .mcp.json a runtime
+#  4. exec del CLI Claude (o smoke test)
+#
+# Modi:
+#  SMOKE=1       → diagnostica struttura, niente DB, exit 0
+#  SMOKE_LIVE=1  → connessione reale al DB, verifica session_user, exit 0
+#  (default)     → exec "$@"  (di norma `claude`)
 
 set -euo pipefail
 
 log() { printf '[entrypoint] %s\n' "$*" >&2; }
 
+# ---- SMOKE (struttura, no DB) ----
 if [[ "${SMOKE:-0}" == "1" ]]; then
-  log "SMOKE mode: skipping bw login/unlock"
+  log "SMOKE mode: skipping DB connection"
   log "user=$(id -un) uid=$(id -u)"
   log "node=$(node --version)"
-  log "bw=$(bw --version 2>/dev/null || echo MISSING)"
   log "psql=$(psql --version)"
   log "python=$(python3 --version)"
   log "claude=$(claude --version 2>/dev/null || echo MISSING)"
@@ -28,11 +34,9 @@ if [[ "${SMOKE:-0}" == "1" ]]; then
   exit 0
 fi
 
-: "${BW_CLIENTID:?BW_CLIENTID env required}"
-: "${BW_CLIENTSECRET:?BW_CLIENTSECRET env required}"
-: "${BW_PASSWORD:?BW_PASSWORD env required}"
+# ---- Required inputs from host launcher ----
+: "${DB_PASSWORD:?DB_PASSWORD env required (host launcher must fetch it from the vault)}"
 : "${AGENT_SLUG:=doc_researcher}"
-: "${BW_VAULT_ITEM:=loomx/agents/${AGENT_SLUG}}"
 : "${SUPABASE_HOST:=aws-1-eu-west-3.pooler.supabase.com}"
 : "${SUPABASE_PORT:=5432}"
 : "${SUPABASE_DB:=postgres}"
@@ -43,31 +47,7 @@ PG_USER="${AGENT_SLUG}.${SUPABASE_PROJECT_REF}"
 mkdir -p "$RUNTIME_DIR"
 chmod 700 "$RUNTIME_DIR"
 
-# D-014: vault EU obbligatorio PRIMA di login
-log "configuring bw server: https://vault.bitwarden.eu"
-bw config server https://vault.bitwarden.eu >/dev/null
-
-log "bw login (apikey)"
-bw login --apikey >/dev/null
-
-log "bw unlock"
-BW_SESSION="$(bw unlock --passwordenv BW_PASSWORD --raw)"
-export BW_SESSION
-
-log "fetching DB password for ${BW_VAULT_ITEM}"
-# Item is a Secure Note (type=2): the password lives in `notes`, last line
-# (convention: free-form notes followed by a final newline + the password).
-# `bw get password` only works for Login items, so parse notes via JSON.
-DB_PASSWORD="$(bw get item "$BW_VAULT_ITEM" | python3 -c "import json,sys; print(json.load(sys.stdin)['notes'].rsplit('\n',1)[-1])")"
-if [[ -z "$DB_PASSWORD" ]]; then
-  log "FATAL: empty DB password from vault item ${BW_VAULT_ITEM}"
-  exit 1
-fi
-printf '%s' "$DB_PASSWORD" > "$RUNTIME_DIR/db_password"
-chmod 600 "$RUNTIME_DIR/db_password"
-
 # libpq PGPASSFILE format: host:port:db:user:password
-# user must be the Supavisor-prefixed form (PG_USER), not the bare role.
 PGPASSFILE="$RUNTIME_DIR/.pgpass"
 printf '%s:%s:%s:%s:%s\n' \
   "$SUPABASE_HOST" "$SUPABASE_PORT" "$SUPABASE_DB" "$PG_USER" "$DB_PASSWORD" \
@@ -75,7 +55,7 @@ printf '%s:%s:%s:%s:%s\n' \
 chmod 600 "$PGPASSFILE"
 export PGPASSFILE
 
-# .mcp.json runtime (template minimo — espandere quando il ruolo entra in prod)
+# .mcp.json runtime — solo lettura per il tooling, mai persistito
 cat > "$RUNTIME_DIR/.mcp.json" <<JSON
 {
   "mcpServers": {
@@ -94,15 +74,14 @@ cat > "$RUNTIME_DIR/.mcp.json" <<JSON
 JSON
 chmod 600 "$RUNTIME_DIR/.mcp.json"
 
-# Lock vault — la session key resta in env del solo processo corrente
-bw lock >/dev/null || true
-unset BW_PASSWORD BW_CLIENTSECRET DB_PASSWORD
+# DB_PASSWORD ora è in PGPASSFILE (chmod 600 in tmpfs), non serve più in env
+unset DB_PASSWORD
 
-# Live smoke: prove auth + RLS + GRANT/DENY end-to-end and exit (no claude exec).
+# ---- SMOKE_LIVE (DB reale, verifica RLS basics) ----
 if [[ "${SMOKE_LIVE:-0}" == "1" ]]; then
-  log "SMOKE_LIVE: running RLS allow/deny matrix"
+  log "SMOKE_LIVE: connecting via Supavisor session-mode"
   psql "host=${SUPABASE_HOST} port=${SUPABASE_PORT} dbname=${SUPABASE_DB} user=${PG_USER} sslmode=require" \
-    -v ON_ERROR_STOP=0 -A -t -c "select 'session_user=' || session_user || ' current_user=' || current_user"
+    -v ON_ERROR_STOP=1 -A -t -c "select 'session_user=' || session_user || ' current_user=' || current_user"
   log "smoke_live OK"
   exit 0
 fi
