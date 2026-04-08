@@ -4,6 +4,48 @@
 
 ---
 
+## S013 — 2026-04-07 (notte) — Review branch feat/direct-postgres-backend di Postman: code review + fix, build OK, test live BLOCCATO (vault)
+
+**Trigger:** task Loomy `9d8ca052` — Postman ha implementato D-023 nel branch `feat/direct-postgres-backend` del repo `loomx-board-mcp` ma non ha potuto eseguire i 7 test live. Richiesto: review, test con ruolo `doc_researcher`, merge se PASS.
+
+### Fatto
+1. **Checkout branch** `feat/direct-postgres-backend` — nota: le modifiche sono uncommitted nel working tree del repo di Postman (branch locale senza commit sopra master). Review eseguita sul working tree.
+2. **Code review** `src/pg-shim.ts` + `src/supabase.ts`:
+   - Identifier regex validation OK (`/^[a-zA-Z_][a-zA-Z0-9_]*$/`), values parametrizzate → no SQL injection.
+   - Nessun log credenziali: solo nome backend su stderr.
+   - Backwards-compat totale (fallback `SUPABASE_URL`+`SERVICE_ROLE_KEY`).
+3. **3 spec violations trovate e corrette sul branch** (fix DBA, da committare quando si riprende):
+   - `pg-shim.ts:326` pool senza `max` → settato `max: 5` (spec D-023 §3).
+   - `supabase.ts:initClient` preferiva silenziosamente `DATABASE_URL` quando entrambe presenti → ora throw esplicito `"Conflicting DB credentials..."`.
+   - Nessuna verifica identita' all'avvio → aggiunto metodo `PgShimClient.verifyIdentity()` che legge `SELECT current_user, session_user` e logga su stderr, invocato fire-and-log in `initClient`.
+4. **Build**: `npm install && npm run build` → tsc clean, zero errori.
+
+### Bloccante
+- **7 step test live non eseguiti**: sessione lanciata via `agent_manager invoke dba` → no TTY per `bw unlock` in foreground. `env.local.txt` contiene solo `BW_CLIENTID`/`BW_CLIENTSECRET`, non la master. Serve Achille per sbloccare il vault e fornire `BW_SESSION` oppure direttamente la password `doc_researcher`.
+- Merge rimandato a quando i 7 test passano.
+
+### Aperti
+- Test live 7 step + commit fix pg-shim/supabase + merge master + summary con commit hash → waiting_on=achille per vault unlock.
+- Working tree `loomx-board-mcp` ha modifiche uncommitted (branch `feat/direct-postgres-backend` locale di Postman + fix DBA). Da committare alla ripresa con message separato: `fix(pg-shim): pool max=5, conflict error, verifyIdentity (DBA review)`.
+
+---
+
+## S012 — 2026-04-07 (sera) — Gap .mcp.json: Board MCP bypassa RLS, D-023 backend dual pg+PostgREST
+
+**Trigger:** question urgente di Loomy (`ad945246`) aprendo `hub/researcher/.mcp.json` per action del summary 51f7dd5c: il Board MCP usa `SUPABASE_SERVICE_ROLE_KEY` → PostgREST, bypassa RLS. Il ruolo `doc_researcher` (D-017/D-019) vive sul canale Supavisor 5432 e non e' raggiungibile dal Board MCP attuale.
+
+### Fatto
+1. **Confermato gap** a Loomy. Mea culpa: nel summary 51f7dd5c avevo proiettato erroneamente il canale psycopg2 (che uso da CLI) su Doc, che invece parla solo col Board MCP Node.
+2. **Valutate 4 alternative** (risposta a Loomy, ref `84d369a2`): (a) PostgREST+JWT custom con claim role → scartata per impatto su authenticator grants, firma JWT per-agent, degrado pgaudit; (b) psycopg2 diretto dal codice agente → scartata perche' frammenta l'interfaccia MCP; (c) secondo Board MCP dedicato → code duplication; (d) estensione del Board MCP con backend `pg` opzionale via `DATABASE_URL` backwards-compat → **scelta**.
+3. **D-023 scritta** in `docs/DECISIONS.md`: Board MCP backend dual, `DATABASE_URL` opt-in con fallback service_role, regole anti credential-leak (env only, mai argv/log), Postman owner implementazione, DBA review pre-merge, POC Doc bloccata fino al supporto `DATABASE_URL`.
+4. **Attesa spec Postman** da Loomy per review (verifico: invarianza tool gtd_*/board_* lato schema, preservazione error code PostgREST→pg, regola env-only).
+
+### Aperti
+- Task b45ea879 (implementazione `agent_manager.py` docker-aware + D-018 `loomx_item_agents`) rimandato a sessione dedicata su istruzione Loomy.
+- Review spec Board MCP backend dual: in attesa da Loomy/Postman.
+
+---
+
 ## S011 cont. ³ — 2026-04-07 (sera) — Container Doc SOSPESO (D-019), Fase 1 prosegue host-direct
 
 **Trigger:** primo test reale di `python hub/agent_manager.py invoke researcher "..."` con il dispatcher docker appena scritto.
@@ -482,3 +524,99 @@ Nessuna decisione finalizzata — analisi in attesa di challenge researcher e ap
 - [DBA] dopo gate gap → migration `agents` schema + ruolo `doc_researcher`
 - [Loomy] ricevere `project_id` di rls-security una volta applicata la migration (non posso recuperarlo senza CLI)
 
+---
+
+## S014 — 2026-04-07 — Merge feat/direct-postgres-backend (D-023, 7/7 PASS)
+
+**Durata:** sessione singola
+**Trigger:** GTD `874ec051` waiting + msg `9d8ca052` review+merge branch Postman.
+
+### Cosa è stato fatto
+
+1. **Sblocco BW** dopo workaround PowerShell: `bw.cmd` (o cmd.exe) bypassa execution policy. Achille passa `BW_SESSION` token, recupero pwd `doc_researcher` dal vault EU `loomx/agents/doc_researcher`.
+2. **2 fix DB scoperti durante i test**:
+   - Migration `20260407150000_doc_researcher_read_grants.sql`: GRANT SELECT + policy SELECT su `board_agents` (server MCP non parte senza, `resolveAgentRegistry` fallisce); GRANT SELECT + policy SELECT su `board_messages` (`USING (session_user='doc_researcher' AND (to_agent='021' OR from_agent='021'))`).
+   - Senza questi grant la migration `20260407100000` è incompleta: copre solo INSERT su board_messages e GTD su loomx_items, non il path "leggi i tuoi messaggi".
+3. **7-step spec D-023 §4** eseguito via test driver (mock McpServer cattura handlers) contro EU pooler con pg-shim → **7/7 PASS reali**:
+   - T1 `current_user=session_user=doc_researcher` ✓
+   - T2 `board_inbox` researcher legge solo i propri ✓
+   - T3 `gtd_add` owner=researcher ✓
+   - T4 `gtd_add` owner=dba DENY (tool layer enforcement)
+   - T5 `board_send` researcher→dba ✓
+   - T6 spoof `from_agent='002'` via INSERT diretto → RLS WITH CHECK violato ✓
+   - T7 (bonus) spoof `loomx_items` owner='dba' via INSERT diretto → RLS WITH CHECK violato ✓
+4. **Cleanup test rows**: 3 GTD (`05e92924`, `94d73407`, `139e8b41`) + 1 board msg (`62409727`) eliminati.
+5. **Merge**: in repo `loomx-board-mcp` committato branch `feat/direct-postgres-backend` come `0ef50eb` (include `src/pg-shim.ts` untracked + 10 file modificati di Postman + fix DBA S013), poi merge no-ff in master come `0f93bee`. Master locale 6 commit ahead di origin.
+
+### Decisioni prese
+
+Nessuna nuova decisione formale.
+
+### Bug catch (caveat per Phase 2)
+
+- T4 in realtà NON prova RLS DB-side: blocco viene dal tool layer (`only loomy can create items for other agents`). T7 (aggiunto) copre il caso DB-side bypassando il tool. Per Phase 2 ricordarsi di testare entrambi i path per ogni agente.
+- Test driver iniziale aveva false-positive su "permission denied → PASS"; rifatto con `isError()` strict.
+
+### Blocker aperti
+
+1. **Push remoto loomx-board-mcp/master** in attesa di OK esplicito Achille (sessione ha autorizzato il merge, non il push).
+2. **Msg `e90274f7`** (RPC sprint 005 home_school_menu_sync da App): pending, non toccato.
+
+### Prossimi step
+
+- [Achille] OK push origin master loomx-board-mcp → DBA pusha + summary `done` a Loomy con `0f93bee`
+- [Loomy] aggiornamento `hub/researcher/.mcp.json` con `DATABASE_URL=doc_researcher@...` → POC settimana parte
+- [DBA] task RPC `home_school_menu_sync` per App (sprint 005)
+- [DBA, Phase 2] estendere read grants pattern (board_agents + board_messages SELECT) ai 9 ruoli rimanenti
+
+### Estensione S014 (sera) — RPC sprint 005 + utenza assistant
+
+1. **Inbox triage**: 4 messaggi stantii chiusi (done/cancelled), 2 archiviati subito.
+2. **Risposta Evaristo (assistant) + question Loomy `.mcp.json` gap**: entrambe inviate. La question di Loomy era già risolta dal merge serale di pg-shim.
+3. **Migration `20260408010000_home_school_menu_sync_rpc.sql`**: 2 funzioni `SECURITY DEFINER` per sprint 005 di App:
+   - `home_school_menu_sync(family, member, week_start, dishes jsonb) → jsonb` — atomic upsert in home_school_menus + mirror in home_menu_items + skip esclusioni. Convenzione `day_of_week` 1..7 ISO.
+   - `home_school_menu_toggle_exclusion(family, member, date, reason, excluded) → jsonb` — toggle atomico esclusione + cleanup/restore mirror row.
+   - Auth: `home_get_my_family_id() = p_family_id` OR `auth.jwt() ->> 'email' = 'scraper@loomx.local'`.
+   - Hardening: `SET search_path = public, pg_temp` su entrambe.
+   - Applicata via `supabase db query --linked --file`, verificata `EXECUTE` su `authenticated`.
+4. **Utenza assistant per Evaristo** (su richiesta diretta Achille "creale tu, sei DBA"):
+   - Verificato che `scraper@loomx.local` esisteva già (creato dal `setup-scraper.mjs` di App), lasciato intatto.
+   - Creato `assistant@loomx.local` via INSERT diretto in `auth.users` (clonando struttura scraper) + bcrypt pwd via `crypt(pwd, gen_salt('bf'))`.
+   - Registrato in `home_profiles` come membro della famiglia Barban (display_name='Evaristo (assistant)', role='member').
+   - Pwd random 32-char generata via openssl, salvata nel vault Bitwarden EU come Secure Note `loomx/auth/assistant` (convenzione D-014: ultima riga del campo notes), con field email + user_id.
+   - Smoke test: vault pwd ↔ `encrypted_password` match via crypt → PASS.
+   - Cleanup file temp.
+   - Notifica Evaristo con istruzioni signInWithPassword + scope home_* via RLS family-based, niente service_role.
+   - Errata corrige inviata ad App: il bloccante umano "Achille deve creare scraper" che avevo segnalato non esiste.
+
+### Decisioni operative aggiuntive
+
+- **D-022 (locale, da formalizzare)**: pattern "agente Supabase Auth dedicato + home_profiles membership" come stop-gap pre-Phase 2 per agenti che operano solo su `home_*`. Più semplice del ruolo Postgres nativo (non richiede pg-shim/DATABASE_URL), riusa RLS esistente. Da promuovere in DECISIONS.md prossima sessione.
+
+### Stato finale inbox dopo S014
+
+- Tutti i messaggi pending gestiti (risposte + ack)
+- Solo i 2 stantii più recenti restano "in attesa di archive_old days≥2"
+- Nessun bloccante umano residuo per nessun agente
+
+
+---
+
+## S015 — 2026-04-09 — Inbox triage sprint 005/007
+
+### Cosa è stato fatto
+
+1. **Blocker App day_of_week** (msg `a1ee8bdf`): migration `20260408020000_home_day_of_week_iso.sql` (creata in coda S014, non ancora committata) verificata applicata al DB — `home_school_menus` e `home_menu_items` ora con CHECK BETWEEN 1 AND 7 (ISO). Risposta done ad App con heads-up frontend (`Date.getDay()` da normalizzare).
+2. **Task App guest_names** (msg `9572f254`): migration `20260408030000_home_menu_items_guest_names.sql` creata e applicata. `home_menu_items.guest_names text[] NOT NULL DEFAULT '{}'`. Verificato che NON esiste UNIQUE su `(menu_id, day_of_week, meal_type)` → multi-row per cella già ammesso, sprint 007 non richiede altre modifiche schema. Risposta done.
+3. **RPC home_school_menu_sync** (msg `e90274f7`): già implementata in S014, status aggiornato a `done`.
+
+### Stato inbox
+
+Tutti i pending azionabili chiusi. Restano 9 acknowledged storici (RLS Phase 1, D-018, governance tag) che sono GTD-tracked, non richiedono azione.
+
+### Migration committate in S015
+
+- `20260407150000_doc_researcher_read_grants.sql` (S013, era untracked)
+- `20260408010000_home_school_menu_sync_rpc.sql` (S014)
+- `20260408020000_home_day_of_week_iso.sql` (S014, hotfix sprint 005)
+- `20260408030000_home_menu_items_guest_names.sql` (S015, sprint 007)

@@ -264,4 +264,32 @@ GTD `db896a84` (`agent_manager.py` docker-aware) chiuso come `cancelled` con rif
 
 ---
 
-*Watermark: D-019*
+### D-023 — Board MCP backend dual: PostgREST (default) + pg diretto via `DATABASE_URL` (opt-in)
+**Tags:** rls, mcp, security
+**Data:** 2026-04-07
+
+**Contesto.** Il Board MCP server (`loomx-board-mcp`) e' un processo Node che si autentica via `SUPABASE_SERVICE_ROLE_KEY` → client `supabase-js` → PostgREST. Questo canale **bypassa RLS** per design. Il ruolo Postgres nativo `doc_researcher` (creato per RLS Phase 1, D-017/D-019) vive invece sul canale Supavisor session mode porta 5432, raggiungibile solo da client `pg` diretto. I due canali non si parlano: finche' Doc (researcher) invoca il Board MCP standard, continua a passare per PostgREST+service_role e RLS non e' applicata — anche se lato DB il ruolo esiste ed e' corretto.
+
+**Alternative escluse.**
+- **PostgREST + JWT custom con claim `role: doc_researcher`**: richiede `GRANT doc_researcher TO authenticator`, sporca il grafo ruoli Supabase; il Board MCP dovrebbe comunque cambiare per firmare JWT per-agent; pgaudit loggerebbe `authenticator` come session_user, indebolendo B-opt-2; perderebbe senso la separazione di processo (container) che era valore di D-019.
+- **psycopg2 diretto dal codice agente**: frammenta l'interfaccia (Doc avrebbe due canali MCP vs DB), rompe l'astrazione "gli agenti parlano solo col Board MCP".
+- **Secondo Board MCP dedicato agli agenti RLS-enabled**: code duplication inutile.
+
+**Decisione.** Estendere il Board MCP server con un secondo backend database basato su `pg` (node-postgres), selezionato in base alla presenza di `DATABASE_URL` in env:
+- `DATABASE_URL` presente → backend `pg`, connessione diretta via Supavisor session mode 5432. `session_user` = ruolo Postgres nativo dell'agente. RLS attiva. pgaudit logga il ruolo reale.
+- `DATABASE_URL` assente → fallback `supabase-js` + `SUPABASE_SERVICE_ROLE_KEY` (comportamento attuale). Nessuna regressione per gli agenti pre-Fase-2.
+
+La superficie tool MCP (`gtd_*`, `board_*`, `loomx_*`) resta identica: la traduzione SQL e la propagazione degli error code devono essere preservate perche' i client esistenti non si accorgano del cambio di backend.
+
+**Regole anti credential-leak** (stesse di `agent_manager.py`, D-017):
+- `DATABASE_URL` letto SOLO da env var, mai da argv, mai in log.
+- Nel container di Doc esportiamo SOLO `DATABASE_URL` — niente `SUPABASE_SERVICE_ROLE_KEY` — per rendere impossibile un downgrade silente a service_role.
+
+**Owner implementazione:** Postman (agent 005, board-mcp). Task aperto da Loomy prima di questa risposta.
+**Review:** il DBA fa review della spec prima del merge, non blocca la feature branch.
+
+**Dipendenza con Fase 1.** La POC settimana di Doc (GTD `5919d745`, cavia RLS Phase 1) parte SOLO dopo che il Board MCP supporta `DATABASE_URL`. Altrimenti la POC misurerebbe il canale sbagliato (service_role via PostgREST) e non validerebbe ne' RLS Phase 1, ne' isolamento di processo, ne' B-opt-2 (pgaudit).
+
+---
+
+*Watermark: D-023*
