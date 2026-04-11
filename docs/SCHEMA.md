@@ -101,7 +101,11 @@ Singoli articoli nella lista della spesa.
 | `checked_at` | TIMESTAMPTZ | |
 | `checked_by` | UUID FK → auth.users | |
 | `added_by` | UUID FK → auth.users | NOT NULL |
+| `from_menu` | BOOLEAN NOT NULL | Default `false`. `true` se l'item proviene dal menu settimanale (icona dedicata in UI). D-030. |
+| `status` | TEXT NOT NULL | Default `'active'`. CHECK IN (`'active'`, `'proposed'`). `proposed` = item proposto da Evaristo in attesa di review utente nella sotto-sezione "Proposta di Evaristo". D-030. |
 | `created_at`, `updated_at` | TIMESTAMPTZ | |
+
+Indice: `idx_home_shopping_items_list_status (list_id, status)` per split-view active/proposed.
 
 #### `home_purchase_history`
 Storico acquisti.
@@ -416,7 +420,7 @@ Co-engagement N:N item-subject (AI agent o persona). Mappa RACI:
 **Post-D-024 + D-025 + D-026:** Policy per `authenticated` (utenti PWA):
 - `loomx_items`:
   - `SELECT`: PMO vede tutto, owner vede i propri, **co-engaged (collaborator OR watcher) vedono gli item linkati** *(D-026)*, **family member vede gli items taggati `famiglia`** *(D-027)*
-  - `INSERT`: solo come se stesso (`owner = loomx_get_owner_slug()`)
+  - `INSERT`: PMO override *(D-029)*, come se stesso, o whitelist dispatcher `{loomy, assistant, achille}` *(D-029 + D-030)*. Nota: `INSERT ... RETURNING` cross-owner viene rifiutato dalla SELECT visibility — usare INSERT senza RETURNING o accettare il rifiuto come read-only.
   - `UPDATE`: PMO *(D-025)*, owner, o **collaborator (NOT watcher)** *(D-026)*
   - `DELETE`: PMO *(D-025)* o owner. Watcher e collaborator NON cancellano.
 - `loomx_tags` *(D-027)*:

@@ -926,3 +926,29 @@ Tutti i pending azionabili chiusi. Restano 9 acknowledged storici (RLS Phase 1, 
 - `20260408010000_home_school_menu_sync_rpc.sql` (S014)
 - `20260408020000_home_day_of_week_iso.sql` (S014, hotfix sprint 005)
 - `20260408030000_home_menu_items_guest_names.sql` (S015, sprint 007)
+
+
+---
+
+## S021 — 2026-04-11 (pomeriggio) — Spesa redesign schema + whitelist Vanessa→Achille (D-030)
+
+### Cosa è stato fatto
+
+1. **Schema redesign Spesa** (msg App `1d446e8c`): migration `20260411200000_home_shopping_items_proposal_fields.sql` applicata. Aggiunte due colonne a `home_shopping_items`:
+   - `from_menu BOOLEAN NOT NULL DEFAULT false` — flag UI per item provenienti dal menu settimanale
+   - `status TEXT NOT NULL DEFAULT 'active' CHECK IN ('active','proposed')` — split-view "Proposta di Evaristo" vs lista principale
+   - Indice composto `idx_home_shopping_items_list_status (list_id, status)` per le query split.
+   - RLS invariata: le policy esistenti (D-001) filtrano via `list_id → home_shopping_lists.family_id`, indipendenti dalle nuove colonne. Verificato esplicitamente con smoke test (default `active/false` ✓, insert `proposed+from_menu` ✓, CHECK rifiuta `'bogus'` ✓, bulk `UPDATE proposed→active` ✓).
+
+2. **Whitelist INSERT loomx_items — `achille`** (gap D-029): migration `20260411210000_loomx_items_insert_whitelist_achille.sql` applicata. Policy `loomx_items_insert_authenticated` ricreata con `owner IN ('loomy','assistant','achille')`. Vanessa puo' ora mandare capture ad Achille (caso d'uso reale dal flusso "Capture con Destinatario").
+   - Test autenticato (`set_config request.jwt.claims.sub` = vanessa): vanessa→achille INSERT ALLOWED ✓, vanessa→loomy ALLOWED ✓ (regression), vanessa→vanessa ALLOWED ✓, vanessa→dba DENIED ✓.
+   - **Caveat**: `INSERT ... RETURNING id` cross-owner viene rifiutato perche' il `RETURNING` valuta SELECT visibility e Vanessa non vede item owned by Achille. Comunicato all'app: usare INSERT senza RETURNING o gestire il rifiuto come "row scritta ma non leggibile".
+
+3. **DECISIONS.md**: aggiunta D-030 (Spesa redesign + amendment whitelist D-029). Watermark D-030.
+
+4. **SCHEMA.md**: aggiornata sezione `home_shopping_items` (nuove colonne + indice) e clausola RLS `loomx_items` INSERT con riferimenti D-029/D-030.
+
+### Migration committate in S021
+
+- `20260411200000_home_shopping_items_proposal_fields.sql`
+- `20260411210000_loomx_items_insert_whitelist_achille.sql`

@@ -488,4 +488,64 @@ WITH CHECK (
 
 ---
 
-*Watermark: D-029*
+### D-030 — Spesa redesign: `from_menu` + `status` su `home_shopping_items` & `achille` nella whitelist INSERT loomx_items
+**Tags:** schema, home, gtd, rls, sprint-spesa, hotfix
+**Data:** 2026-04-11
+
+Due cambiamenti correlati emersi nella stessa sessione (msg `1d446e8c` app → dba per il primo, gap rilevato in D-029 per il secondo).
+
+#### Parte 1 — `home_shopping_items.from_menu` + `status`
+
+Trigger: sprint redesign Spesa (GTD `3609d4e1`). Il bottone "Genera spesa" non scrive piu' direttamente nella lista: crea un GTD item per Evaristo (assistant) che, dopo il calcolo ingredienti, pusha gli item nella tabella con `status='proposed'`. La pagina Spesa mostra una sotto-sezione "Proposta di Evaristo" da cui l'utente puo' confermare singolarmente o "Importare tutto" (bulk `UPDATE ... SET status='active' WHERE status='proposed'`). Gli item del menu settimanale ricevono `from_menu=true` per icona dedicata in UI.
+
+```sql
+ALTER TABLE home_shopping_items
+  ADD COLUMN from_menu BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'proposed'));
+
+CREATE INDEX idx_home_shopping_items_list_status
+  ON home_shopping_items (list_id, status);
+```
+
+**Trade-off colonne vs tabella separata `home_shopping_proposals`.** Scelta colonne per tre motivi: (1) la pagina Spesa fa gia' query su `home_shopping_items` con filtro `list_id`, una tabella separata raddoppierebbe le query e i join; (2) le RLS policy esistenti (D-001, migration `20260330110000`) filtrano via `list_id IN (SELECT id FROM home_shopping_lists WHERE family_id = home_get_my_family_id())`, quindi sono automaticamente family-scoped sia per `active` che per `proposed` senza dover duplicare le policy; (3) l'operazione "Importa tutto" diventa un singolo `UPDATE`, non un `INSERT INTO ... SELECT FROM ... DELETE FROM ...` su due tabelle.
+
+**Indice `(list_id, status)`.** La pagina Spesa fa due fetch contigui sullo stesso `list_id`, uno per `status='active'` e uno per `status='proposed'`. L'indice composto serve entrambi senza index seek aggiuntivi.
+
+**RLS invariata.** Verificato esplicitamente che le policy esistenti sono indipendenti dalle nuove colonne — nessuna `DROP POLICY/CREATE POLICY` necessaria. Smoke test (`DO` block come superuser): default `active`/`false` ✓, insert `proposed`+`from_menu=true` ✓, CHECK rifiuta `'bogus'` ✓, bulk `UPDATE proposed→active` ✓.
+
+**Non incluso.** Niente `proposed_by_agent` o `proposed_at` per ora. La proposta arriva via Evaristo che e' l'unico writer di `status='proposed'`; se in futuro piu' agenti faranno proposte, valutare aggiunta colonna provenance.
+
+**Migration:** `20260411200000_home_shopping_items_proposal_fields.sql`.
+
+#### Parte 2 — `achille` nella whitelist INSERT non-PMO su `loomx_items`
+
+Trigger: gap rilevato in D-029. La whitelist letterale `('loomy', 'assistant')` apriva la capture cross-owner solo verso inbox di agente, ma il caso reale "Vanessa manda promemoria/capture ad Achille" e' un flusso esplicito della UI "Capture con Destinatario" che il PO (Achille) ha confermato come desiderato. Vanessa e Achille appartengono entrambi a `is_family=true`, quindi la barriera era inutilmente restrittiva.
+
+**Decisione:** amendment a D-029. Aggiungere `'achille'` alla whitelist letterale, mantenendo il rationale "lista corta inline e' meglio di una colonna nuova" finche' il set resta piccolo (oggi 3 elementi).
+
+```sql
+WITH CHECK (
+  loomx_is_pmo()
+  OR owner = loomx_get_owner_slug()
+  OR owner IN ('loomy', 'assistant', 'achille')
+)
+```
+
+**Threat model aggiornato.** Vanessa puo' creare item destinati a `{loomy, assistant, achille}`. NON puo' destinarli a `dba`, `app`, `librarian` o ad altri utenti umani futuri. Edit/delete restano governati da D-025 (solo PMO o owner): una volta scritta una capture per Achille, Vanessa non puo' piu' modificarla. La capture e' fire-and-forget — coerente con il modello dispatcher.
+
+**Side effect noto sulla `RETURNING`.** Una `INSERT ... RETURNING id` di Vanessa verso `owner='achille'` viene rifiutata con `42501` perche' il `RETURNING` valuta le SELECT policy sulla riga appena scritta, e Vanessa non ha visibilita' su item owned by Achille (a meno che l'item non porti il tag `famiglia` — D-027). NON e' un bug della INSERT policy: l'INSERT senza `RETURNING` passa correttamente. Il client app deve fare l'insert senza `RETURNING`, oppure il caller deve essere preparato a gestire l'errore. Comunicato all'app agent nella reply.
+
+**Quando promuovere a colonna.** Se compare un quarto destinatario non-PMO (es. Azzurra come capture target), valutare colonna `can_be_target_by_anyone` su `loomx_owner_auth` invece di continuare ad allargare la whitelist. Quattro slug e' il limite di leggibilita' per una whitelist inline.
+
+**Test (autenticato Vanessa, `request.jwt.claims.sub`):**
+- vanessa → achille INSERT: ALLOWED ✓ (era DENY prima)
+- vanessa → loomy INSERT: ALLOWED ✓ (regression check)
+- vanessa → vanessa INSERT: ALLOWED ✓ (regression check)
+- vanessa → dba INSERT: DENIED ✓ (insufficient_privilege)
+
+**Migration:** `20260411210000_loomx_items_insert_whitelist_achille.sql`.
+
+---
+
+*Watermark: D-030*
