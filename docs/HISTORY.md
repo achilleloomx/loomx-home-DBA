@@ -4,6 +4,47 @@
 
 ---
 
+## S022 — 2026-04-11 — Hotfix RLS INSERT cross-owner `loomx_items` (D-029)
+
+**Trigger:** App agent (board msg `781df652`) ha deployato la feature "Capture con Destinatario" (commit `4e87cad`/`1363c55`) ma la RLS `INSERT` su `loomx_items` (D-024, invariata da D-025) blocca qualunque scrittura cross-owner. Il PMO non puo' inviare item a Vanessa/Loomy/Evaristo, e Vanessa non puo' inoltrare item a Loomy/Evaristo (i due "dispatcher").
+
+### Lavoro
+
+1. **Lettura policy esistente** (`20260409100000_gtd_ui_sprint1.sql:153`): `WITH CHECK (owner = loomx_get_owner_slug())` → mai esteso a D-025.
+2. **Decisione D-029** (whitelist literal vs colonna `can_be_target_by_anyone`): scelta opzione A (literal). Motivazione completa in `docs/DECISIONS.md` D-029.
+3. **Migration** `20260411190000_loomx_items_insert_cross_owner.sql`: DROP+CREATE policy `loomx_items_insert_authenticated` con `WITH CHECK (loomx_is_pmo() OR owner = loomx_get_owner_slug() OR owner IN ('loomy','assistant'))`.
+4. **Apply** via `supabase db query --linked --file ...` → OK.
+5. **Verifica policy** via `pg_policy`: check_expr presente come da migration.
+6. **Test 10/10 PASS** via DO block PL/pgSQL con `set_config('role','authenticated',true)` + `request.jwt.claims` simulati per Achille (`b42fb347-...`) e Vanessa (`5d399ab4-...`):
+
+| user | target_owner | expected | actual |
+|---|---|---|---|
+| achille | achille | OK | OK |
+| achille | vanessa | OK | OK |
+| achille | loomy | OK | OK |
+| achille | assistant | OK | OK |
+| achille | dba | OK | OK |
+| vanessa | vanessa | OK | OK |
+| vanessa | loomy | OK | OK |
+| vanessa | assistant | OK | OK |
+| vanessa | achille | DENY | DENY |
+| vanessa | dba | DENY | DENY |
+
+Tutti i probe sono stati rolled back via `RAISE EXCEPTION` finale (zero righe orfane in `loomx_items`).
+
+### Files modificati
+- `supabase/migrations/20260411190000_loomx_items_insert_cross_owner.sql` (nuovo)
+- `docs/DECISIONS.md` (D-029)
+- `docs/HISTORY.md` (questa entry)
+
+### Insight sessione
+
+**Edit/delete invariati e' una scelta deliberata.** Una volta che Vanessa scrive un item su un'inbox dispatcher (`loomy`/`assistant`), non puo' piu' editarlo: solo il target owner (o il PMO) puo'. Questo e' il pattern corretto per un dispatch one-shot — l'autore "molla" l'item e il dispatcher decide cosa farne. Se in futuro servira' la capacita' "edit my outbound", servira' una colonna `created_by` distinta da `owner`, oppure un soft-link via `loomx_item_agents` con ruolo `Author/R`.
+
+**RAISE NOTICE non e' catturato dal CLI Supabase**, RAISE EXCEPTION sì (appare nel JSON di errore). Pattern utile per test in cui servono N risultati strutturati: accumula in TEXT report e RAISE EXCEPTION come ultimo statement → rollback automatico + visibilita' totale.
+
+---
+
 ## S021 — 2026-04-11 — Re-verifica TASK S020 + ALTER `loomx_tags` description/created_at (D-028)
 
 **Trigger:** Achille ha riemesso gli stessi due task urgenti di S020 (cleanup duplicati menu 13-19 aprile + creazione `loomx_tags`/`loomx_item_tags` con RLS famiglia). Riapertura dovuta a vista stale del DB: entrambi i task erano già stati completati in S020 nella mattinata.

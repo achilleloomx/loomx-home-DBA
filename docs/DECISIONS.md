@@ -454,6 +454,38 @@ Trigger: Achille S020. La tabella `loomx_tags` originaria (D-007, migration `202
 
 Note: la verifica TASK 1 di questa sessione (cleanup duplicati menu famiglia 13-19 aprile, `home_weekly_menus.45044e55-efd1-4ef1-af8a-f38b0750d4d0`) ha mostrato che la tabella era già pulita: 14 item famiglia (7 lunch + 7 dinner) + 5 item school per Azzurra Mon-Fri, nessun duplicato Proposta A/B. Cleanup probabilmente avvenuto in sessione precedente di Evaristo (#6b o successiva). Nessuna DELETE eseguita.
 
+### D-029 — INSERT cross-owner su `loomx_items`: PMO override + whitelist dispatcher (amendment D-024/D-025)
+**Tags:** schema, gtd, rls, sprint-1, hotfix
+**Data:** 2026-04-11
+
+Trigger: feature App agent "Capture con Destinatario" (commit `4e87cad`/`1363c55`, board msg `781df652`). La UI di capture (`src/app/(app)/gtd/capture/page.tsx`) permette al PMO di scegliere a chi inviare un nuovo item GTD (qualsiasi slug da `loomx_owner_auth`), e al non-PMO di scegliere tra `self` + `loomy` + `assistant`. Lato lato app il codice e' pronto, ma la policy `INSERT` ereditata da D-024 forzava `owner = loomx_get_owner_slug()`, bloccando qualunque scrittura cross-owner. D-025 aveva esteso solo `UPDATE`/`DELETE`, lasciando `INSERT` invariato.
+
+**Decisione:** estendere `INSERT` con la stessa logica simmetrica di D-025 per il PMO, e aggiungere una whitelist hardcoded dei due slug "dispatcher" (`loomy`, `assistant`) per i non-PMO.
+
+```sql
+WITH CHECK (
+  loomx_is_pmo()
+  OR owner = loomx_get_owner_slug()
+  OR owner IN ('loomy', 'assistant')
+)
+```
+
+**Trade-off whitelist letterale vs colonna `can_be_target_by_anyone`.** L'App agent aveva proposto due opzioni: (A) whitelist literal nella policy, (B) nuova colonna `can_be_target_by_anyone BOOLEAN` su `loomx_owner_auth` con backfill. Scelta opzione A perché:
+1. Esistono solo due slug dispatcher oggi (loomy, assistant) e non hanno user_id (sono inbox di agente, non utenti umani autenticabili).
+2. Una colonna nuova richiederebbe backfill, security review e una superficie di attacco aggiuntiva (chi puo' settare quel flag?).
+3. Promuovere a colonna o helper SECURITY DEFINER quando comparira' un terzo dispatcher (se mai).
+
+**Threat model.** Vanessa (futura non-PMO) puo' creare item destinati a `loomy` o `assistant`. E' intenzionale: entrambe sono inbox di agente, non inbox umane, e Loomy/Evaristo gia' processano item pushati da umani via altri canali. Vanessa NON puo' creare item destinati ad `achille` o ad altri utenti umani — la RLS continua a negarlo.
+
+**Edit/delete invariati.** D-025 governa `UPDATE`/`DELETE`: una volta scritto un item su un'inbox dispatcher, l'autore non puo' piu' modificarlo o cancellarlo — solo il target owner (o il PMO) puo'. Questo e' il comportamento corretto per un dispatch one-shot.
+
+**Test.** PL/pgSQL DO block con `set_config('role','authenticated',true)` + `request.jwt.claims.sub` per simulare JWT di Achille e Vanessa. Risultato: 10/10 PASS.
+- achille -> {achille, vanessa, loomy, assistant, dba} → tutti OK
+- vanessa -> {vanessa, loomy, assistant} → OK
+- vanessa -> {achille, dba} → DENY (insufficient_privilege)
+
+**Migration:** `20260411190000_loomx_items_insert_cross_owner.sql` (DROP+CREATE policy `loomx_items_insert_authenticated`).
+
 ---
 
-*Watermark: D-028*
+*Watermark: D-029*
