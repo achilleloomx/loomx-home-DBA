@@ -266,13 +266,18 @@ Progetti LoomX con link a cliente e agente responsabile.
 | `created_at`, `updated_at` | TIMESTAMPTZ | |
 
 #### `loomx_tags`
-Tag per categorizzazione items.
+Tag per categorizzazione items. Dimensione condivisa (lettura per tutti gli authenticated).
 
 | Colonna | Tipo | Note |
 |---|---|---|
-| `id` | UUID PK | |
+| `id` | UUID PK | DEFAULT `gen_random_uuid()` |
 | `name` | TEXT UNIQUE NOT NULL | |
-| `color` | TEXT | |
+| `color` | TEXT | Hex color usato dall'UI GTD per il chip |
+| `description` | TEXT | Semantica/regole d'uso. D-028 |
+| `created_at` | TIMESTAMPTZ NOT NULL | DEFAULT `now()`. D-028 |
+
+**Tag riservati:**
+- `famiglia` *(D-027)* — visibilità di gruppo: items con questo tag sono visibili a tutti gli `loomx_owner_auth.is_family=true`.
 
 #### `loomx_items`
 GTD items — task management centralizzato (D-004 hub).
@@ -282,12 +287,18 @@ GTD items — task management centralizzato (D-004 hub).
 | `id` | UUID PK | |
 | `title` | TEXT NOT NULL | |
 | `body` | TEXT | |
-| `gtd_status` | TEXT | `inbox`, `next_action`, `waiting_for`, `project_task`, `calendar`, `someday`, `done`, `trash`. Default `inbox` |
+| `gtd_status` | TEXT | `inbox`, `next_action`, `waiting`, `scheduled`, `in_progress`, `someday`, `done`, `trash`. Default `inbox` |
 | `owner` | TEXT | agent_id o 'achille' |
 | `waiting_on` | TEXT | Chi si sta aspettando |
 | `priority` | TEXT | `low`, `normal`, `high`, `urgent`. Default `normal` |
 | `deadline` | TIMESTAMPTZ | |
 | `completed_at` | TIMESTAMPTZ | |
+| `context` | TEXT | Contesto GTD: `@casa`, `@ufficio`, etc. Testo libero (no FK). D-024 |
+| `time_estimate` | SMALLINT | Minuti stimati: 5, 15, 30, 60, 120. CHECK constraint. D-024 |
+| `energy_level` | SMALLINT | 1=bassa, 2=media, 3=alta. CHECK 1-3. D-024 |
+| `deleted_at` | TIMESTAMPTZ | Soft-delete timestamp. Retention 7gg, poi hard-delete via cron. D-024 |
+| `clarified_at` | TIMESTAMPTZ | Quando l'item esce da inbox. Metrica time-to-clarify. D-024 |
+| `project_id` | UUID FK → loomx_gtd_projects | GTD project (1:N). ON DELETE SET NULL. D-024 |
 | `source` | TEXT | Provenienza: meeting, email, board, manual |
 | `source_ref` | TEXT | Riferimento sorgente |
 | `created_at`, `updated_at` | TIMESTAMPTZ | |
@@ -337,8 +348,94 @@ Indice documenti per progetto/agente.
 - **`loomx_v_waiting_for`** — Items con `gtd_status = 'waiting_for'`. Ordinati per deadline.
 - **`loomx_v_project_dashboard`** — Conteggio items per progetto e gtd_status.
 
-**RLS:** Tutte le tabelle hanno RLS abilitato, deny-all (nessuna policy esplicita). Accesso solo via service role (D-008).
+#### `loomx_gtd_projects` *(D-024)*
+Progetti GTD (outcome multi-step personali). Separati da `loomx_projects` (anagrafica org).
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `id` | UUID PK | |
+| `title` | TEXT NOT NULL | |
+| `description` | TEXT | |
+| `owner` | TEXT NOT NULL | slug |
+| `status` | TEXT NOT NULL | `active`, `completed`, `on_hold`, `dropped`. Default `active` |
+| `created_at`, `updated_at` | TIMESTAMPTZ | |
+
+#### `loomx_contexts` *(D-024)*
+Contesti GTD custom per owner. Catalogo dropdown, non vincolante su loomx_items.
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `id` | UUID PK | |
+| `name` | TEXT NOT NULL | e.g. `@casa`, `@palestra` |
+| `owner` | TEXT NOT NULL | slug |
+| `is_default` | BOOLEAN | Default false |
+| `sort_order` | SMALLINT | Default 0 |
+| `created_at` | TIMESTAMPTZ | |
+
+**UNIQUE:** `(owner, name)`
+
+#### `loomx_owner_auth` *(D-024, esteso D-027)*
+Mapping owner slug <-> Supabase Auth UUID. Flag `is_pmo` per visibilita' cross-owner, flag `is_family` per visibilità di gruppo (D-027).
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `owner_slug` | TEXT PK | 'achille', 'loomy', etc. |
+| `user_id` | UUID UNIQUE | FK auth.users. NULL per agenti |
+| `is_pmo` | BOOLEAN NOT NULL | Default false. PMO = SELECT all items |
+| `is_family` | BOOLEAN NOT NULL | Default false. Family member = vede gli items taggati `famiglia` (D-027). Oggi: achille, vanessa. |
+| `created_at` | TIMESTAMPTZ | |
+
+#### `loomx_item_agents` *(D-018, esteso D-026)*
+Co-engagement N:N item-subject (AI agent o persona). Mappa RACI:
+- `collaborator` = R/A — read + write
+- `watcher` = I — read-only (Informed)
+
+| Colonna | Tipo | Note |
+|---|---|---|
+| `item_id` | UUID FK → loomx_items | CASCADE |
+| `agent_slug` | TEXT NOT NULL | Slug subject (board_agents.slug **o** loomx_owner_auth.owner_slug). FK rimossa in D-026. |
+| `role` | TEXT NOT NULL | CHECK `role IN ('collaborator','watcher')` (D-026). Default 'collaborator'. |
+| `added_by` | TEXT NOT NULL | slug agente/persona che ha aggiunto il link |
+| `added_at` | TIMESTAMPTZ | |
+
+**PK composita:** `(item_id, agent_slug)`
+
+#### Functions *(D-024, esteso D-026)*
+
+- **`loomx_get_owner_slug()`** — SECURITY DEFINER. Restituisce lo slug dell'utente autenticato corrente leggendo `loomx_owner_auth`.
+- **`loomx_is_pmo()`** — SECURITY DEFINER. Restituisce `true` se l'utente corrente ha flag `is_pmo`.
+- **`loomx_item_owner(uuid) → text`** *(D-026)* — SECURITY DEFINER. Owner di un item GTD bypassando RLS (anti-recursion nelle policy `loomx_item_agents`).
+- **`loomx_user_engaged_role(uuid) → text`** *(D-026)* — SECURITY DEFINER. Restituisce `collaborator`/`watcher`/`NULL` per il current user su un item, bypassando RLS.
+- **`loomx_is_family_member()`** *(D-027)* — SECURITY DEFINER. Restituisce `true` se l'utente corrente ha flag `is_family`.
+- **`loomx_item_has_family_tag(uuid) → bool`** *(D-027)* — SECURITY DEFINER. `true` se l'item ha il tag `famiglia`. Bypassa RLS di `loomx_item_tags`/`loomx_tags`.
+
+#### RLS (`loomx_*`)
+
+**Pre-D-024:** Deny-all (nessuna policy esplicita). Accesso solo via service role (D-008).
+
+**Post-D-024 + D-025 + D-026:** Policy per `authenticated` (utenti PWA):
+- `loomx_items`:
+  - `SELECT`: PMO vede tutto, owner vede i propri, **co-engaged (collaborator OR watcher) vedono gli item linkati** *(D-026)*, **family member vede gli items taggati `famiglia`** *(D-027)*
+  - `INSERT`: solo come se stesso (`owner = loomx_get_owner_slug()`)
+  - `UPDATE`: PMO *(D-025)*, owner, o **collaborator (NOT watcher)** *(D-026)*
+  - `DELETE`: PMO *(D-025)* o owner. Watcher e collaborator NON cancellano.
+- `loomx_tags` *(D-027)*:
+  - `SELECT`: tutti gli authenticated (dimensione condivisa)
+  - `INSERT`/`UPDATE`/`DELETE`: solo PMO
+- `loomx_item_tags` *(D-027)*:
+  - `SELECT`: PMO, owner del parent item, co-engaged, o family member su item taggato `famiglia`
+  - `INSERT`/`DELETE`: PMO o owner del parent item
+- `loomx_gtd_projects`: PMO override su UPDATE/DELETE *(D-025)*, INSERT solo come sé.
+- `loomx_contexts`: CRUD solo propri.
+- `loomx_owner_auth`: SELECT solo la propria riga.
+- `loomx_item_projects`: SELECT filtrato per visibilita' items.
+- `loomx_projects` (org): SELECT read-only per PMO.
+- `loomx_item_agents` *(D-026)*:
+  - `SELECT`: PMO, subject del link, o owner dell'item linkato
+  - `INSERT/DELETE`: PMO o owner dell'item linkato
+
+Policy per-agent (doc_researcher etc.) restano invariate e additive (nota: `doc_researcher_update_engaged` non filtra per `role` — vedi D-026 follow-up).
 
 ---
 
-*Ultimo aggiornamento: 2026-04-05*
+*Ultimo aggiornamento: 2026-04-11 (D-027)*

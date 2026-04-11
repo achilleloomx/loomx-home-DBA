@@ -292,4 +292,168 @@ La superficie tool MCP (`gtd_*`, `board_*`, `loomx_*`) resta identica: la traduz
 
 ---
 
-*Watermark: D-023*
+### D-024 — GTD UI Sprint 1: schema design (projects, contexts, owner-auth, PMO visibility)
+**Tags:** schema, gtd, rls, sprint-1
+**Data:** 2026-04-09
+
+Schema extensions per la UI GTD nella PWA, su richiesta app agent + task Loomy.
+
+**Sotto-decisioni:**
+
+1. **GTD projects separati da loomx_projects (scelta B).** L'esistente `loomx_projects` e' anagrafica organizzativa (client_id, repo, type consulting/tech/internal). I progetti GTD sono outcome personali per-owner con ciclo di vita diverso (active/completed/on_hold/dropped). Creare `loomx_gtd_projects` evita di inquinare l'anagrafica e mantiene gli status enum indipendenti. L'N:N `loomx_item_projects` resta per i legami organizzativi; il nuovo `loomx_items.project_id` FK e' 1:N verso GTD projects.
+
+2. **Owner-auth mapping con flag `is_pmo`.** Tabella `loomx_owner_auth` mappa slug <-> auth.uid(). `is_pmo = true` abilita SELECT cross-owner su loomx_items. Multi-user ready per Vanessa: aggiunta futura = INSERT con `is_pmo = false` (vede solo i suoi), upgradabile a `true` con un UPDATE. Nessun hardcode di 'achille' nelle policy.
+
+3. **Context come testo libero.** Il campo `loomx_items.context` e' TEXT senza FK. La tabella `loomx_contexts` fornisce il catalogo dropdown per owner ma non vincola il valore sull'item. Cancellare un contesto non impatta gli item che lo referenziano — la UI gestisce i valori stale.
+
+4. **RLS per authenticated.** Nuove policy su loomx_items, loomx_gtd_projects, loomx_contexts per il ruolo `authenticated` (utenti PWA). Additive alle policy per-agent esistenti (doc_researcher ecc.), nessun conflitto. Helper functions `loomx_get_owner_slug()` e `loomx_is_pmo()` come SECURITY DEFINER per leggere loomx_owner_auth senza esporre la tabella.
+
+5. **Visibilita' Vanessa (opzioni).** Quando Vanessa avra' un account:
+   - **Opzione A** (raccomandata): `is_pmo = true` → Observatory mostra tutti gli item
+   - **Opzione B**: `is_pmo = false` → vede solo i propri item ovunque
+   - Default iniziale: `is_pmo = false`. Upgrade con `UPDATE loomx_owner_auth SET is_pmo = true WHERE owner_slug = 'vanessa'`.
+
+**Migration:** `20260409100000_gtd_ui_sprint1.sql`.
+
+**Conseguenze:**
+- L'app non deve usare il DDL proposto in `gtd-db-requirements.md` — lo schema finale e' in questa migration.
+- La tabella `loomx_owner_auth` richiede il mapping auth UUID di Achille. La migration auto-detect via `auth.users` (primo utente non-system). Se fallisce, serve UPDATE manuale.
+- I contesti di default seed-ati per Achille: @casa, @ufficio, @telefono, @computer, @commissioni.
+- `loomx_projects` (org) riceve una policy SELECT read-only per PMO.
+
+### D-025 — PMO write override su loomx_items + loomx_gtd_projects (amendment D-024)
+**Tags:** schema, gtd, rls, sprint-1, hotfix
+**Data:** 2026-04-11
+
+D-024 aveva concesso al PMO solo `SELECT` cross-owner; le policy `UPDATE`/`DELETE` su `loomx_items` e `loomx_gtd_projects` rimanevano restrette al solo proprio owner. Nella sessione S018 e' emerso che la feature "editing inline cartine GTD" (cambiare owner/priority/gtd_status di qualsiasi item) e il soft-delete cross-owner (`UPDATE deleted_at`) erano bloccati: Achille poteva vedere ma non scrivere.
+
+**Decisione:** simmetria read/write per il PMO. Le policy `UPDATE` e `DELETE` ora usano:
+
+```sql
+USING (loomx_is_pmo() OR owner = loomx_get_owner_slug())
+WITH CHECK (loomx_is_pmo() OR owner = loomx_get_owner_slug())
+```
+
+Threat model: il PMO e' un singolo utente trusted (Achille, org owner). Concedergli write cross-owner e' coerente col suo ruolo. Vanessa (futura `is_pmo = false`) resta limitata ai propri item.
+
+**Non toccato:**
+- `INSERT`: il PMO inserisce solo come se' stesso (`owner = loomx_get_owner_slug()`).
+- Policy per-agent (doc_researcher ecc.): invariate.
+
+**Migration:** `20260411100000_loomx_items_pmo_update_delete.sql` (DROP+CREATE delle 4 policy).
+
+### D-026 — RACI su `loomx_item_agents`: ruolo `watcher` (Informed) + co-engagement nelle policy authenticated
+**Tags:** schema, gtd, rls, raci
+**Data:** 2026-04-11
+
+Estensione semantica di D-018 per supportare il concetto RACI di "Informed". Trigger: Achille S018, voleva poter aggiungere Vanessa come "informata" sull'item GTD `Cercare un corso di Karate per Azzurra` (owner=achille) senza darle permessi di modifica.
+
+**Mapping RACI → `loomx_item_agents.role`:**
+- `collaborator` = R/A — può leggere E modificare l'item (ma non eliminarlo)
+- `watcher` = I — può solo leggere l'item (Informed, read-only)
+
+CHECK constraint enforced: `role IN ('collaborator', 'watcher')`. Nessuna riga preesistente, applicazione safe.
+
+**Cambiamenti strutturali:**
+1. **FK `agent_slug → board_agents(slug)` rimossa.** Con l'introduzione del watcher-persona la colonna deve poter referenziare anche slug di persone presenti in `loomx_owner_auth` (es. `vanessa`), non solo AI agents della rubrica `board_agents`. Stesso pattern di `loomx_items.owner` (TEXT libero senza FK).
+2. **Policy authenticated su `loomx_item_agents`** (prima esisteva solo `doc_researcher_select_own_links` scoped al session_user Postgres): SELECT visibile a PMO + subject del link + owner dell'item; INSERT/DELETE riservati a owner dell'item + PMO.
+3. **Estensione policy authenticated su `loomx_items`** per il path co-engagement:
+   - `SELECT`: include items dove `loomx_user_engaged_role(id) IS NOT NULL` (qualsiasi role, watcher e collaborator entrambi leggono)
+   - `UPDATE`: include items dove `loomx_user_engaged_role(id) = 'collaborator'` (watcher esplicitamente escluso)
+   - `DELETE`: invariata, owner/PMO only
+   - `INSERT`: invariata, owner-self only
+
+**Helper SECURITY DEFINER (anti-recursion).** La prima versione delle policy usava `EXISTS` cross-table tra `loomx_items` e `loomx_item_agents`, creando recursion infinita (Postgres rifiuta `42P17`). Il fix introduce due funzioni `SECURITY DEFINER`:
+- `loomx_item_owner(uuid) → text` — owner dell'item, bypassa RLS
+- `loomx_user_engaged_role(uuid) → text` — role del current user su item (NULL se non linkato), bypassa RLS
+
+Le policy ora chiamano queste funzioni invece di sub-EXISTS, eliminando il loop. Pattern già usato altrove con `loomx_get_owner_slug()` / `loomx_is_pmo()`.
+
+**Non toccato (out-of-scope, follow-up tracciato):**
+- Le policy `doc_researcher_select_engaged` / `doc_researcher_update_engaged` (D-018) hanno `EXISTS` su `loomx_item_agents` senza filtro `role`. Significa che, in teoria, se il researcher venisse aggiunto come `watcher` riuscirebbe comunque a fare UPDATE. Lasciate intatte per non destabilizzare il POC RLS Phase 1 (D-019). Il researcher in pratica non viene mai aggiunto come watcher; tightening eventuale in fase successiva.
+
+**Threat model.** Il watcher è un permesso strettamente additivo (read-only). L'unico rischio è la divulgazione dell'item a un soggetto non autorizzato — ma l'aggiunta è limitata all'owner dell'item (o PMO) tramite la policy INSERT su `loomx_item_agents`, quindi è sotto controllo dell'owner stesso.
+
+**Migrations:**
+- `20260411150000_loomx_item_agents_watcher_raci.sql` — drop FK, add CHECK, add policy authenticated (prima versione, recursion bug)
+- `20260411160000_loomx_item_agents_raci_recursion_fix.sql` — helper SECURITY DEFINER + riscrittura policy senza sub-EXISTS
+
+**Test matrix S018 (PASS 7/7):**
+- T1: Vanessa watcher → SELECT Karate item → visibile ✓
+- T2: Vanessa watcher → UPDATE → 0 rows affected (silently filtered) ✓
+- T3: titolo invariato dopo T2 ✓
+- T4: Vanessa watcher → DELETE → 0 rows affected ✓
+- T5: Vanessa → INSERT proprio item → success ✓
+- T6: Vanessa SELECT loomx_items → vede 2 righe (proprio item + Karate watcher) ✓
+- T7: dopo promozione a `collaborator` → UPDATE priority='high' → success ✓
+
+### D-027 — Tag `famiglia` come visibilità di gruppo (`loomx_owner_auth.is_family`)
+**Tags:** schema, gtd, rls, tags, famiglia
+**Data:** 2026-04-11
+
+Trigger: Achille S019. Il watcher (D-026) è puntuale (persona X su item Y); serve un meccanismo per dichiarare che un item GTD è "di famiglia" e quindi automaticamente visibile a tutti i Barban (oggi: Achille, Vanessa) senza dover aggiungere watcher uno per uno.
+
+**Modello scelto: tag + flag persona, niente tabella ad hoc.**
+- I tag (`loomx_tags` / `loomx_item_tags`) esistevano già da una migration precedente ma erano completamente inattivi: RLS abilitato, zero policy → deny-all per tutti gli authenticated. Riusati come dimensione condivisa.
+- `loomx_owner_auth.is_family BOOLEAN NOT NULL DEFAULT false`. Marcato `true` su `achille` + `vanessa`. Data-driven: per estendere la famiglia (es. domani Azzurra avrà un account), si flippa la colonna.
+- Helper SECURITY DEFINER (stesso pattern anti-recursion di D-026):
+  - `loomx_is_family_member()` → bool, true se l'utente corrente ha `is_family=true`
+  - `loomx_item_has_family_tag(uuid)` → bool, true se l'item ha il tag `famiglia`
+- Policy permissiva nuova `loomx_items_select_family_tag` (additiva alle esistenti PMO/owner/co-engaged):
+  ```sql
+  USING (loomx_is_family_member() AND loomx_item_has_family_tag(id))
+  ```
+- `loomx_tags` policy: SELECT a tutti gli authenticated (i tag sono dimensione condivisa, servono per autocomplete/render); INSERT/UPDATE/DELETE solo PMO.
+- `loomx_item_tags` policy: SELECT a chi può vedere il parent item (PMO/owner/engaged/family); INSERT/DELETE riservata a PMO + owner del parent item. UPDATE non esiste (PK = (item_id, tag_id), nessuna colonna mutevole).
+
+**Differenza watcher vs tag famiglia:**
+| Aspetto | Watcher (D-026) | Tag famiglia (D-027) |
+|---|---|---|
+| Granularità | Persona X su item Y | Gruppo su item Y |
+| Manutenzione | Riga in `loomx_item_agents` per ogni persona | Una sola riga in `loomx_item_tags` |
+| Estensibilità | Watcher singolo | Tutta la famiglia, presente e futura |
+| Caso d'uso | "Voglio che SOLO Mario sappia di X" | "X riguarda tutti i Barban" |
+
+I due meccanismi sono ortogonali e si possono comporre: un item può avere sia il tag `famiglia` sia un watcher consulente esterno, le visibilità sono OR.
+
+**Threat model.**
+- Solo `achille` + `vanessa` hanno `is_family=true`. Gli altri owner_slug in `loomx_owner_auth` (loomy, dba, app, assistant) hanno `is_family=false` per default e non vedono i tag famiglia.
+- I ruoli per-agent (es. `doc_researcher` di D-019) non sono `authenticated`, quindi la policy `loomx_items_select_family_tag` non si applica. Il futuro rollout Docker (D-020) deve confermare che nessuno dei ruoli consulting venga marcato `is_family`.
+- Il tag `famiglia` può essere creato/eliminato/rinominato solo dal PMO (Achille). Nessun altro può cambiare la semantica del marcatore.
+
+**Migration:** `20260411170000_loomx_tags_famiglia_visibility.sql`
+- ALTER `loomx_owner_auth` + UPDATE seed
+- Helper functions
+- Seed tag `famiglia` (idempotente, color `#e91e63`)
+- 1 nuova policy su `loomx_items` + 4 policy su `loomx_tags` + 3 policy su `loomx_item_tags`
+
+**Test S019 (PASS):**
+- Baseline: Vanessa SELECT su item Achille `Pagare spese condominio` (untagged, no engagement) → 0 rows ✓
+- Tag `famiglia` applicato → Vanessa vede l'item ✓
+- Vanessa NON vede gli altri 2 Achille items (vecchio commercialista, Marco Antonelli) non taggati ✓
+- Achille (PMO) vede tutti gli items in qualunque caso ✓
+- `loomx_get_owner_slug()` / `loomx_is_family_member()` con JWT Vanessa → `vanessa` / `true` ✓
+
+**Cleanup post-test.** L'item `Cercare un corso di Karate per Azzurra` (`4a6ce69d`) ha sia il tag `famiglia` (questa migration) sia Vanessa come watcher (D-026, aggiunto in S018 prima di questa sessione). I due meccanismi convivono. Il watcher non è stato rimosso perché aggiunto deliberatamente; valutare in S020 se collassare su solo-tag.
+
+### D-028 — `loomx_tags`: aggiunta `description` + `created_at` per allineamento contratto
+**Tags:** schema, loomx, tags
+**Data:** 2026-04-11
+
+Trigger: Achille S020. La tabella `loomx_tags` originaria (D-007, migration `20260405100000`) aveva solo `(id, name, color)`. Achille ha richiesto esplicitamente `description TEXT` (semantica/regole d'uso del tag) e `created_at TIMESTAMPTZ` per uniformare il modello con gli altri dimension table `loomx_*` (clients, projects, contexts) e abilitare audit di chi ha introdotto un tag e quando.
+
+**Modello.**
+- ALTER additivo idempotente (`ADD COLUMN IF NOT EXISTS`):
+  - `description TEXT` (nullable)
+  - `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
+- `color` resta perché già consumato dall'UI GTD per il rendering chip (tag colorati nelle viste).
+- Backfill semantico: il tag `famiglia` (seed di D-027) riceve la description "Visibilità di gruppo: ogni item con questo tag è visibile a tutti i family member (loomx_owner_auth.is_family). Vedi D-027.".
+- Per le tag legacy (urgent, governance, marketing, tech, consulting, home, blocked, review, migration) `description` resta NULL — verranno popolate on-demand quando l'UI permetterà la modifica.
+
+**Migration:** `20260411180000_loomx_tags_description_created_at.sql`
+
+Note: la verifica TASK 1 di questa sessione (cleanup duplicati menu famiglia 13-19 aprile, `home_weekly_menus.45044e55-efd1-4ef1-af8a-f38b0750d4d0`) ha mostrato che la tabella era già pulita: 14 item famiglia (7 lunch + 7 dinner) + 5 item school per Azzurra Mon-Fri, nessun duplicato Proposta A/B. Cleanup probabilmente avvenuto in sessione precedente di Evaristo (#6b o successiva). Nessuna DELETE eseguita.
+
+---
+
+*Watermark: D-028*

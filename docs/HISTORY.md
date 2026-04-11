@@ -4,6 +4,271 @@
 
 ---
 
+## S021 — 2026-04-11 — Re-verifica TASK S020 + ALTER `loomx_tags` description/created_at (D-028)
+
+**Trigger:** Achille ha riemesso gli stessi due task urgenti di S020 (cleanup duplicati menu 13-19 aprile + creazione `loomx_tags`/`loomx_item_tags` con RLS famiglia). Riapertura dovuta a vista stale del DB: entrambi i task erano già stati completati in S020 nella mattinata.
+
+### TASK 1 — Re-verifica menu 2026-04-13
+
+Query di stato su `home_menu_items WHERE menu_id='45044e55-efd1-4ef1-af8a-f38b0750d4d0'`:
+- `total=19`, `family_items=14`, `school_items=5` ✓
+- Distribuzione family per `(day_of_week, meal_type)`: 7 lunch + 7 dinner, esattamente 1 riga per slot ✓
+- Nessun duplicato Proposta A/B residuo (S020 li aveva DELETE)
+
+**Esito:** nessuna DELETE necessaria. Status invariato dalla chiusura S020.
+
+### TASK 2 — Re-verifica tag `famiglia` + ALTER schema (D-028)
+
+**Re-verifica D-027 già applicata:**
+- `loomx_tags` / `loomx_item_tags` esistono, RLS abilitato, policy in place (`loomx_tags_select_authenticated`, `loomx_tags_insert_pmo`, `loomx_tags_update_pmo`, `loomx_tags_delete_pmo`, `loomx_item_tags_select_authenticated`, `loomx_item_tags_insert_authenticated`, `loomx_item_tags_delete_authenticated`).
+- `loomx_owner_auth.is_family` presente, `true` su achille + vanessa.
+- Tag `famiglia` presente nel seed.
+- Policy `loomx_items_select_family_tag` presente su `loomx_items`.
+
+**Test RLS Vanessa rieseguito (clean) — PASS:**
+1. Creati 2 probe item come PMO (service role): `TEST_RLS_PRIVATE_ACHILLE` (no tag), `TEST_RLS_FAMIGLIA_ACHILLE` (tag famiglia). Owner=achille per entrambi.
+2. `SET ROLE authenticated; SET request.jwt.claims.sub=<vanessa-uuid>` → SELECT su entrambi → **1 riga** (solo `TEST_RLS_FAMIGLIA_ACHILLE`) ✓
+3. Stessa SELECT con JWT Achille → **2 righe** (PMO bypass) ✓
+4. Cleanup probe: DELETE su `loomx_item_tags` + `loomx_items` → 0 leftover ✓
+
+**Lavoro nuovo: D-028 — `loomx_tags` schema alignment.**
+Achille aveva specificato nel briefing che `loomx_tags` deve avere `description TEXT` e `created_at TIMESTAMPTZ default now()`. Lo schema legacy (D-007) aveva solo `(id, name, color)`. ALTER additivo idempotente:
+- `ADD COLUMN IF NOT EXISTS description TEXT`
+- `ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
+- Backfill description sul tag `famiglia` (richiama D-027)
+- `color` mantenuto (usato da UI GTD)
+
+**Migration:** `20260411180000_loomx_tags_description_created_at.sql` — applicata via `supabase db query --linked --file ...` + INSERT manuale in `supabase_migrations.schema_migrations` per allineare il tracker (le S020-S021 girano in modalità apply-then-track perché `db push` aveva avuto attriti su S018).
+
+### Files modificati
+- `supabase/migrations/20260411180000_loomx_tags_description_created_at.sql` (nuovo)
+- `docs/DECISIONS.md` (D-028)
+- `docs/HISTORY.md` (questa entry)
+
+### Insight sessione
+Achille ha lavorato dall'iPhone con vista stale del DB (probabilmente cache UI o memoria di una sessione precedente al fix S020). Quando un task arriva con premessa fattuale verificabile (es. "ci sono ~28 item invece di 14"), **il primo step deve essere SEMPRE una query di ground truth** prima di scrivere migrations o DELETE distruttive. In questa sessione la verifica ha evitato di rieseguire DELETE già fatte (rischio: cancellare item legittimi reinseriti dopo S020) e di ricreare tabelle che già esistevano.
+
+---
+
+## S020 — 2026-04-11 — Cleanup duplicati menu 13-19 apr + tag `famiglia` (D-027)
+
+**Trigger:** due task da Achille:
+1. Evaristo aveva segnalato 28 item duplicati nel menu settimanale 2026-04-13 (Proposta A vs Proposta B). Pulire e tenere un solo set coerente.
+2. Implementare il tag `famiglia` come visibilità di gruppo sui GTD items (alternativa watcher-by-watcher).
+
+### TASK 1 — Cleanup menu 2026-04-13
+
+**Diagnostica:** un solo `home_weekly_menus` per la settimana (`45044e55-...`, status `draft`), 33 `home_menu_items`. Decomposti in 28 family items (14 + 14 duplicati Proposta A/B) + 5 `school` items (Azzurra, `covered_by_school=true`, `notes='school:YYYY-MM-DD'`, `member_ids=[Azzurra]`).
+
+**Differenziatore Proposta A vs B:**
+- Set A: cene con `member_ids=[]` (vuoto), pranzi con notes verbosi `(Azzurra a scuola: <piatto>)`
+- Set B: cene con `member_ids=[Achille,Vanessa,Azzurra,Camilla]` (popolato), pranzi con notes brevi `Azzurra in mensa`
+
+Criterio Achille: tenere il set con `member_ids` popolati → KEEP Set B, DELETE Set A.
+
+**DELETE eseguito** in singolo statement (`WHERE id IN (...) RETURNING ...`): 14 righe rimosse, ID elencati nel return.
+
+**Verifica finale per slot (`day_of_week × meal_type`):**
+- 7 lunch family + 7 dinner family = **14 family meals** ✓
+- 5 lunch school per Azzurra (giorni 1-5) preservati = totale **19 righe** in `home_menu_items`
+
+**Nota.** I 5 school items NON sono duplicati: rappresentano la mensa di Azzurra, hanno `member_ids=[Azzurra]` e `covered_by_school=true`. Ho intenzionalmente non li ho cancellati nonostante il "esattamente 14 pasti" letterale di Achille — segnalato nel summary a Loomy per validazione.
+
+### TASK 2 — Tag `famiglia` + RLS visibilità di gruppo
+
+**Findings preliminari:**
+- `loomx_tags` / `loomx_item_tags` esistevano già (id, name UNIQUE, color / item_id+tag_id PK + FK CASCADE), ma RLS abilitato senza policy → deny-all per tutti gli authenticated. 9 tag preesistenti (urgent, governance, marketing, ...), nessuno `famiglia`.
+- `loomx_owner_auth` aveva achille (PMO, user_id set) + vanessa (non-PMO, user_id set) + 4 agent slug con user_id=null.
+- Policy `loomx_items` esistenti: PMO bypassa tutto; authenticated SELECT via `loomx_is_pmo() OR owner=current OR loomx_user_engaged_role(id) IS NOT NULL`.
+
+**Decisione (D-027):**
+- `loomx_owner_auth.is_family BOOLEAN` (default false, true per achille+vanessa). Data-driven invece di hardcoded list.
+- 2 helper SECURITY DEFINER (anti-recursion, stesso pattern di D-026):
+  - `loomx_is_family_member()` → bool
+  - `loomx_item_has_family_tag(uuid)` → bool
+- 1 nuova policy permissiva su `loomx_items`: `loomx_items_select_family_tag` con `USING (is_family AND has_family_tag)`. Si OR-somma alle policy esistenti.
+- Policy minimal su `loomx_tags` (SELECT all auth, write PMO only) e `loomx_item_tags` (SELECT include il path family).
+- Seed tag `famiglia` (color `#e91e63`).
+
+**Migration:** `20260411170000_loomx_tags_famiglia_visibility.sql` — applicata via `supabase db push --linked` dopo `migration repair --status applied 20260411150000 20260411160000` (le due S018 erano state applicate manualmente fuori dal tracker).
+
+**Test S019 RLS clean:**
+1. Baseline: simulando JWT Vanessa (`5d399ab4-...`), `SELECT loomx_items WHERE id='5859bb9c-...' (Pagare spese condominio, owner=achille, no engagement, no tag)` → **0 rows** ✓
+2. `INSERT INTO loomx_item_tags (item_id, 'famiglia-tag-id')` per il condominio
+3. Stessa SELECT come Vanessa → **1 row** (condominio visibile) ✓
+4. Estensione: SELECT su 3 item Achille (condominio + vecchio commercialista + Marco Antonelli), Vanessa vede solo il condominio (taggato) → ✓
+5. Achille (PMO) sulla stessa SELECT → tutti e 3 i row visibili (PMO bypass) ✓
+6. `loomx_get_owner_slug()` con JWT Vanessa → `vanessa`, `loomx_is_family_member()` → `true`, `loomx_is_pmo()` → `false` ✓
+7. **Falso positivo iniziale rilevato e corretto.** Primo test usava l'item Karate (`4a6ce69d`) ma Vanessa era già watcher su quell'item da S018 → la visibilità arrivava da co-engagement, non dal tag. Switchato a un item Achille pulito (condominio).
+
+**Cleanup post-test:** condominio untagged (era solo per test), karate ri-taggato `famiglia` (use case originale di Achille). Karate ora ha sia il tag famiglia sia Vanessa watcher — ridondante ma non rimuovo il watcher senza permesso esplicito.
+
+### Files modificati
+- `supabase/migrations/20260411170000_loomx_tags_famiglia_visibility.sql` (nuovo)
+- `docs/DECISIONS.md` (D-027)
+- `docs/SCHEMA.md` (loomx_owner_auth.is_family + tag famiglia)
+- `docs/HISTORY.md` (questa entry)
+
+---
+
+## S019 — 2026-04-11 — Auth user Vanessa + RACI watcher su loomx_item_agents
+
+**Trigger:** due task diretti da Achille:
+1. Creare l'utente Supabase Auth per Vanessa (`vanessa@loomx.local`) come membro famiglia Barban, non-PMO.
+2. Estendere `loomx_item_agents` con il concetto RACI di "Informed" (`watcher` = read-only) per poterla aggiungere come watcher sull'item GTD `Cercare un corso di Karate per Azzurra` (owner=achille).
+
+### Findings
+1. `home_family_members` aveva già una riga `Vanessa` (id `14547471-...`, role=`adult`) — entità tracker famiglia, separata da `auth.users`. Nessun INSERT necessario lì.
+2. `home_profiles` non aveva ancora la sua riga (è il bridge `user_id ↔ family_id` letto da `home_get_my_family_id()`).
+3. `loomx_item_agents` non aveva CHECK constraint sul `role` (commento D-018 lo escludeva esplicitamente "naming libero"). FK su `board_agents(slug)` impediva di linkare slug-persona come `vanessa`.
+4. Tabella reale per la spesa è `home_shopping_items` / `home_shopping_lists`, non `home_grocery_items` (come citato nel task da Achille — segnalato nel summary).
+5. Le helper PMO/owner sono `loomx_is_pmo()` / `loomx_get_owner_slug()`, NON `home_is_pmo`/`home_get_my_owner_slug` (che non esistono).
+
+### TASK 1 — Utente Vanessa
+
+Tutto via `supabase db query --linked` (no migration, è data seed):
+
+1. **`auth.users` INSERT** clonando la struttura `assistant@loomx.local` (S014). Campi critici impostati esplicitamente a stringa vuota (NOT `NULL`) per evitare crash GoTrue: `confirmation_token`, `recovery_token`, `email_change`, `email_change_token_new`. Password = `AzzurraCamilla1990` via `crypt(pwd, gen_salt('bf', 10))`. UID generato: `5d399ab4-46bf-4940-b797-d757dd98f00c`.
+2. **`loomx_owner_auth` INSERT** `('vanessa', <uid>, false)`.
+3. **`home_profiles` INSERT** `(user_id, family_id='0a097ea1-...', display_name='Vanessa', role='member')`. Primo tentativo con `role='parent'` rifiutato dal CHECK `home_profiles_role_check (admin|member)` — corretto a `member`.
+4. **Smoke test password**: `crypt('AzzurraCamilla1990', encrypted_password) = encrypted_password` → PASS.
+5. **Verifica RLS** simulando session via `SET LOCAL ROLE authenticated; SET LOCAL request.jwt.claims = '{"sub":"<uid>",...}'`:
+   - `auth.uid()` → uid Vanessa ✓
+   - `loomx_get_owner_slug()` → 'vanessa' ✓
+   - `loomx_is_pmo()` → false ✓
+   - `home_get_my_family_id()` → famiglia Barban ✓
+   - `home_shopping_lists` → 1 riga (lista famiglia) ✓
+   - `home_weekly_menus` → 4 righe ✓
+   - `home_menu_items` → 34 righe ✓
+   - `home_profiles WHERE family_id=...` → 4 (Achille, assistant, scraper, Vanessa) ✓
+   - `loomx_items` → 0 (corretto, prima dell'aggiunta come watcher)
+
+### TASK 2 — RACI `watcher` su `loomx_item_agents`
+
+**Migration `20260411150000_loomx_item_agents_watcher_raci.sql`** (D-026):
+- `DROP CONSTRAINT loomx_item_agents_agent_slug_fkey` (rimossa la FK su `board_agents` per ammettere slug-persona)
+- `ADD CONSTRAINT loomx_item_agents_role_check CHECK (role IN ('collaborator','watcher'))`
+- Policy authenticated SELECT/INSERT/DELETE su `loomx_item_agents`
+- Riscrittura `loomx_items_select_authenticated` con `EXISTS (SELECT 1 FROM loomx_item_agents...)`
+- Riscrittura `loomx_items_update_authenticated` con `EXISTS ... AND lia.role='collaborator'`
+
+**Bug recursion (42P17).** Test T1 ha fatto esplodere `infinite recursion detected in policy for relation "loomx_items"` perché `loomx_items` policy → `EXISTS` su `loomx_item_agents` → policy `loomx_item_agents` → `EXISTS` su `loomx_items` → loop.
+
+**Hotfix `20260411160000_loomx_item_agents_raci_recursion_fix.sql`:**
+- `loomx_item_owner(uuid) → text` SECURITY DEFINER (bypassa RLS)
+- `loomx_user_engaged_role(uuid) → text` SECURITY DEFINER (bypassa RLS)
+- Riscrittura policy per chiamare le funzioni invece di sub-EXISTS
+- Pattern già usato con `loomx_get_owner_slug()` / `loomx_is_pmo()`
+
+**Test matrix (PASS 7/7) con Vanessa simulata via `request.jwt.claims`:**
+- T1: SELECT Karate item come watcher → visibile ✓
+- T2: UPDATE come watcher → 0 rows affected ✓
+- T3: titolo invariato ✓
+- T4: DELETE come watcher → 0 rows affected ✓
+- T5: INSERT proprio item (`owner='vanessa'`) → success ✓
+- T6: SELECT loomx_items → 2 righe (proprio item + Karate watcher) ✓
+- T7: dopo `UPDATE loomx_item_agents SET role='collaborator'` → UPDATE Karate priority='high' → success ✓
+
+**Cleanup post-test:**
+- `loomx_item_agents.role` riportato a `'watcher'` (stato finale richiesto)
+- `loomx_items.priority` Karate riportato a `'normal'`
+- DELETE del test item Vanessa (T5)
+
+### Stato finale
+- Vanessa logabile in app con `vanessa@loomx.local` / `AzzurraCamilla1990`
+- Vede menu/spesa famiglia tramite RLS family-scoped esistenti
+- Vede e crea i propri `loomx_items`
+- È watcher (read-only) sull'item Karate di Achille
+- D-026 documentata, watermark aggiornato
+
+### Pendenti
+- **Salvare password Vanessa nel vault Bitwarden EU** come Secure Note `loomx/auth/vanessa` (convenzione D-014: ultima riga `notes`). NON fatto in questa sessione: `bw` host-side ha l'issue PowerShell exec policy e Achille può salvarla manualmente più velocemente.
+- **`env.local.txt` lato app**: aggiungere account demo Vanessa se serve per dev (segnalato out-of-scope).
+- **Tightening doc_researcher policies** per filtrare `role='collaborator'` nell'EXISTS di update — non urgente, researcher non viene aggiunto come watcher in pratica. Follow-up D-018/D-026.
+- **Naming inconsistency**: Achille ha citato `home_grocery_items` ma la tabella reale è `home_shopping_items`. Da chiarire se rinominare o aggiornare la doc.
+
+---
+
+## S018 — 2026-04-11 — GTD UI Sprint 1 hotfix: PMO write override
+
+**Trigger:** sessione di verifica RLS pre-deploy delle 3 feature GTD UI dell'app (editing inline cartine, editing titolo Clarify, soft-delete con undo). Achille richiede pre-flight delle policy `loomx_items` per assicurarsi che lui (PMO) possa modificare/cancellare qualsiasi item.
+
+### Findings
+1. Migration `20260409100000_gtd_ui_sprint1` gia' applicata (2026-04-09). Schema OK, mapping `loomx_owner_auth.achille -> auth.uid()` correttamente popolato con `is_pmo=true`.
+2. **Gap critico (bloccante feature)**: le policy `loomx_items_update_authenticated` e `loomx_items_delete_authenticated` consentivano la scrittura solo al proprio owner. Nessun override PMO. Stesso problema su `loomx_gtd_projects`. Achille poteva SELECT tutto ma UPDATE/DELETE solo i propri item — quindi inline editing cross-owner e soft-delete (UPDATE `deleted_at`) bloccati.
+3. `home_school_menus`: schema OK (`week_start date` + `day_of_week int 1..7`, no ambiguita TZ). Bug "delay 1 giorno" e' scraper-side. Notato re-insert di `week_start=2026-04-06` fatto sabato 2026-04-11 — sospetto bug nel calcolo Monday corrente nel weekend.
+
+### Fatto
+1. Migration `20260411100000_loomx_items_pmo_update_delete.sql` — DROP+CREATE delle 4 policy (UPDATE/DELETE su `loomx_items` + `loomx_gtd_projects`) con USING/CHECK estesi a `loomx_is_pmo() OR owner = loomx_get_owner_slug()`. INSERT invariata.
+2. Apply via `supabase db push --linked --include-all`.
+3. Verifica post-apply via `pg_policy`: tutte e 4 le policy aggiornate.
+4. **D-025** scritta come amendment a D-024.
+5. Board: ack msg `7b0de547` (app), risposta `done` con dettagli fix + nota schema scuola.
+
+### Pendenti
+- Test E2E delle 3 feature lato app (in corso lato app)
+- Bug menu scolastico: scraper-side, non DBA
+- Hard-delete cron `deleted_at > 7gg` (GTD `f72f14bd`, ancora someday)
+
+---
+
+## S017 — 2026-04-09 — Reset password auth.users
+
+**Trigger:** richiesta diretta Achille — reset password `achille.barban@outlook.com` a `test`.
+
+### Fatto
+1. `UPDATE auth.users SET encrypted_password = crypt('test', gen_salt('bf', 10))` via `supabase db query --linked`
+2. Confermato: id `b42fb347-92d2-4139-975f-f28dc913fc07`, email match
+
+### Note
+- Operazione puntuale, nessuna migration necessaria
+- Pendenti dalla board: msg app su GTD Sprint 1 migration (da applicare), guest_names, review board-mcp
+
+---
+
+## S016 — 2026-04-09 — GTD UI Sprint 1: schema design + migration
+
+**Trigger:** task Loomy `35c25726` + task app `18043d4b` — l'app ha bisogno di struttura DB per la UI GTD nella PWA.
+
+### Analisi
+- Letto doc requisiti app (`loomx-home-app/docs/gtd-db-requirements.md`) come INPUT di bisogni funzionali
+- Studiato schema esistente: `loomx_items`, `loomx_projects`, `loomx_item_projects`, `loomx_item_agents`
+- Valutato riuso `loomx_projects` per progetti GTD → decisione: **tabella separata** `loomx_gtd_projects` (D-024)
+
+### Fatto
+1. **Migration `20260409100000_gtd_ui_sprint1.sql`** — schema design completo:
+   - `loomx_owner_auth`: mapping slug ↔ auth.uid() con flag `is_pmo` (multi-user ready per Vanessa)
+   - `loomx_get_owner_slug()` + `loomx_is_pmo()`: helper SECURITY DEFINER per RLS
+   - `loomx_gtd_projects`: progetti GTD separati da anagrafica org
+   - `loomx_contexts`: contesti GTD custom per owner (catalogo dropdown, no FK su items)
+   - ALTER `loomx_items`: +6 colonne (context, time_estimate, energy_level, deleted_at, clarified_at, project_id)
+   - RLS policies per `authenticated` su items, gtd_projects, contexts, owner_auth, item_projects, projects (org read-only PMO)
+   - 7 indici per query Engage, Observatory, Waiting, soft-delete cleanup, GTD projects
+   - Seed: owner_auth (5 slug), auto-detect auth UUID Achille, 5 contesti default
+2. **D-024** scritta in DECISIONS.md
+3. **SCHEMA.md** aggiornato con nuove tabelle/colonne
+4. **board_send** all'app con struttura finale
+5. **board_send summary** a Loomy
+
+### Applicazione e verifica (S016 cont.)
+6. **Migration applicata** via `supabase db query --linked` (non `db push` — aveva 9 migration pregresse non tracciate nella history)
+7. **Migration history riparata**: registrate le 9 migration manuali 20260407*-20260408* in `supabase_migrations.schema_migrations`
+8. **Smoke test PASS**:
+   - `loomx_owner_auth`: 5 righe, Achille UUID auto-detected (`b42fb347-92d2-4139-975f-f28dc913fc07`), is_pmo=true
+   - `loomx_contexts`: 5 contesti seed presenti
+   - `loomx_gtd_projects`: tabella creata (vuota, corretto)
+   - `loomx_items`: 6 nuove colonne confermate con tipi e CHECK constraints corretti
+   - 15 RLS policies attive, 8 indici creati
+9. **GTD `7c02fa5e` completato**
+10. **board_send** all'app con schema completo per integrazione useGtd
+11. **board_send summary** a Loomy
+
+### Note
+- Nessun DDL dell'app copiato — lo schema e' stato progettato dal DBA sulla base delle esigenze funzionali
+- Cron hard-delete soft-deleted items (deleted_at > 7gg) tracciato come GTD someday `f72f14bd`
+
+---
+
 ## S013 — 2026-04-07 (notte) — Review branch feat/direct-postgres-backend di Postman: code review + fix, build OK, test live BLOCCATO (vault)
 
 **Trigger:** task Loomy `9d8ca052` — Postman ha implementato D-023 nel branch `feat/direct-postgres-backend` del repo `loomx-board-mcp` ma non ha potuto eseguire i 7 test live. Richiesto: review, test con ruolo `doc_researcher`, merge se PASS.
